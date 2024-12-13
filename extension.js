@@ -155,7 +155,7 @@ export function start(options = {}) {
 					throw new Error(`Invalid transformer path: ${importPath}`);
 				}
 
-				// Transformer must be be a module with a default export
+				// Transformer must be be a module with named exports
 				const { transformRequestOptions, transformRequestPath, transformResponse } = await import(importPath);
 
 				transformReqOptionsFn = transformRequestOptions;
