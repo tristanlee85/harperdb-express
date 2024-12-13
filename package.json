@@ -1,34 +1,34 @@
 {
-  "author": {
-    "email": "tristanlee85@gmail.com",
-    "name": "Tristan Lee"
-  },
-  "dependencies": {
-    "cheerio": "^1.0.0",
-    "express": "^4.21.2",
-    "express-http-proxy": "^2.1.1",
-    "shell-quote": "^1.8.1"
-  },
-  "devDependencies": {
-    "@harperdb/code-guidelines": "^0.0.2",
-    "prettier": "^3.4.2"
-  },
-  "description": "A HarperDB extension to proxy requests to an Express server",
-  "files": [
-    "config.yaml",
-    "extension.js"
-  ],
-  "name": "harperdb-express",
-  "prettier": "@harperdb/code-guidelines/prettier",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/tristanlee85/harperdb-express.git"
-  },
-  "scripts": {
-    "format": "prettier .",
-    "format:check": "npm run format -- --check",
-    "format:fix": "npm run format -- --write"
-  },
-  "type": "module",
-  "version": "1.0.0"
+	"author": {
+		"email": "tristanlee85@gmail.com",
+		"name": "Tristan Lee"
+	},
+	"dependencies": {
+		"cheerio": "^1.0.0",
+		"express": "^4.21.2",
+		"express-http-proxy": "^2.1.1",
+		"shell-quote": "^1.8.1"
+	},
+	"devDependencies": {
+		"@harperdb/code-guidelines": "^0.0.2",
+		"prettier": "^3.4.2"
+	},
+	"description": "A HarperDB extension to proxy requests to an Express server",
+	"files": [
+		"config.yaml",
+		"extension.js"
+	],
+	"name": "@harperdb/express",
+	"prettier": "@harperdb/code-guidelines/prettier",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tristanlee85/harperdb-express.git"
+	},
+	"scripts": {
+		"format": "prettier .",
+		"format:check": "npm run format -- --check",
+		"format:fix": "npm run format -- --write"
+	},
+	"type": "module",
+	"version": "1.0.0"
 }
