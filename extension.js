@@ -161,10 +161,6 @@ export function start(options = {}) {
 				const importPath = path.resolve(componentPath, config.transformerPath);
 				const { transformRequestOptions, transformRequestPath, transformResponse } = await import(importPath);
 
-				console.log('transformRequestOptions', transformRequestOptions);
-				console.log('transformRequestPath', transformRequestPath);
-				console.log('transformResponse', transformResponse);
-
 				transformReqOptionsFn = transformRequestOptions;
 				transformReqPathFn = transformRequestPath;
 				transformResFn = transformResponse;
