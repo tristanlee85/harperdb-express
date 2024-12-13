@@ -12,9 +12,7 @@ import cheerio from 'cheerio';
  * Validating the incoming host should help prevent abuse by restricting
  * the passed host header to the allowedHosts list.
  */
-const allowedHosts = new Set([
-  '83c5-2600-1700-f2e0-b0f-74f7-c2c1-a4ad-e69d.ngrok-free.app',
-]);
+const allowedHosts = new Set(['83c5-2600-1700-f2e0-b0f-74f7-c2c1-a4ad-e69d.ngrok-free.app']);
 
 /**
  * @typedef {Object} ExtensionOptions - The configuration options for the extension.
@@ -31,14 +29,10 @@ const allowedHosts = new Set([
  * @param {string} expectedType The expected type (i.e. `'string'`, `'number'`, `'boolean'`, etc.).
  */
 function assertType(name, option, expectedType) {
-  if (option) {
-    const found = typeof option;
-    assert.strictEqual(
-      found,
-      expectedType,
-      `${name} must be type ${expectedType}. Received: ${found}`
-    );
-  }
+	if (option) {
+		const found = typeof option;
+		assert.strictEqual(found, expectedType, `${name} must be type ${expectedType}. Received: ${found}`);
+	}
 }
 
 /**
@@ -47,22 +41,22 @@ function assertType(name, option, expectedType) {
  * @returns {Required<ExtensionOptions>}
  */
 function resolveConfig(options) {
-  assertType('port', options.port, 'number');
-  assertType('subPath', options.subPath, 'string');
+	assertType('port', options.port, 'number');
+	assertType('subPath', options.subPath, 'string');
 
-  // Remove leading and trailing slashes from subPath
-  if (options.subPath?.[0] === '/') {
-    options.subPath = options.subPath.slice(1);
-  }
-  if (options.subPath?.[options.subPath?.length - 1] === '/') {
-    options.subPath = options.subPath.slice(0, -1);
-  }
+	// Remove leading and trailing slashes from subPath
+	if (options.subPath?.[0] === '/') {
+		options.subPath = options.subPath.slice(1);
+	}
+	if (options.subPath?.[options.subPath?.length - 1] === '/') {
+		options.subPath = options.subPath.slice(0, -1);
+	}
 
-  return {
-    port: options.port ?? 3000,
-    subPath: options.subPath ?? '',
-    servers: options.servers,
-  };
+	return {
+		port: options.port ?? 3000,
+		subPath: options.subPath ?? '',
+		servers: options.servers,
+	};
 }
 
 /**
@@ -70,91 +64,92 @@ function resolveConfig(options) {
  * @param {ExtensionOptions} options
  */
 export function start(options = {}) {
-  const config = resolveConfig(options);
+	const config = resolveConfig(options);
 
-  return {
-    async handleDirectory(_, componentPath) {
-      console.log(`Setting up Express.js app in ${componentPath}`);
+	return {
+		async handleDirectory(_, componentPath) {
+			console.log(`Setting up Express.js app in ${componentPath}`);
 
-      if (
-        !fs.existsSync(componentPath) ||
-        !fs.statSync(componentPath).isDirectory()
-      ) {
-        throw new Error(`Invalid component path: ${componentPath}`);
-      }
+			if (!fs.existsSync(componentPath) || !fs.statSync(componentPath).isDirectory()) {
+				throw new Error(`Invalid component path: ${componentPath}`);
+			}
 
-      const app = express();
+			const app = express();
 
-      // Middleware to validate host
-      app.use((req, res, next) => {
-        const host = req.headers['x-forwarded-host'] || req.hostname;
-        if (!allowedHosts.has(host)) {
-          console.error(`Rejected request from unauthorized host: ${host}`);
-          return res.status(403).send('Forbidden');
-        }
-        next();
-      });
+			app.use((req, res, next) => {
+				return res.status(200).send(`Hello World from ${req.url}`);
+			});
 
-      // Middleware for proxying and DOM manipulation
-      app.use(
-        proxy('https://example.com', {
-          proxyReqPathResolver: (req) => req.url,
-          userResDecorator: async (proxyRes, proxyResData, req, res) => {
-            const contentType = proxyRes.headers['content-type'] || '';
-            if (contentType.includes('text/html')) {
-              const $ = cheerio.load(proxyResData.toString('utf-8'));
-              // Example DOM manipulation
-              $('title').text('Modified Title');
-              return $.html();
-            }
-            return proxyResData;
-          },
-        })
-      );
+			// // Middleware to validate host
+			// app.use((req, res, next) => {
+			//   const host = req.headers['x-forwarded-host'] || req.hostname;
+			//   if (!allowedHosts.has(host)) {
+			//     console.error(`Rejected request from unauthorized host: ${host}`);
+			//     return res.status(403).send('Forbidden');
+			//   }
+			//   next();
+			// });
 
-      // Middleware for static files
-      const staticPath = path.join(componentPath, 'public');
-      if (fs.existsSync(staticPath)) {
-        app.use(express.static(staticPath));
-        console.log(`Serving static files from: ${staticPath}`);
-      }
+			// // Middleware for proxying and DOM manipulation
+			// app.use(
+			//   proxy('https://example.com', {
+			//     proxyReqPathResolver: (req) => req.url,
+			//     userResDecorator: async (proxyRes, proxyResData, req, res) => {
+			//       const contentType = proxyRes.headers['content-type'] || '';
+			//       if (contentType.includes('text/html')) {
+			//         const $ = cheerio.load(proxyResData.toString('utf-8'));
+			//         // Example DOM manipulation
+			//         $('title').text('Modified Title');
+			//         return $.html();
+			//       }
+			//       return proxyResData;
+			//     },
+			//   })
+			// );
 
-      // Middleware for subPath handling
-      // app.use((req, res, next) => {
-      //   if (config.subPath && !req.url.startsWith(`/${config.subPath}/`)) {
-      //     return next(); // Not a matching path; skip handling
-      //   }
+			// Middleware for static files
+			const staticPath = path.join(componentPath, 'public');
+			if (fs.existsSync(staticPath)) {
+				app.use(express.static(staticPath));
+				console.log(`Serving static files from: ${staticPath}`);
+			}
 
-      //   // Rewrite the URL to remove the subPath prefix
-      //   req.url = config.subPath
-      //     ? req.url.replace(new RegExp(`^/${config.subPath}/`), '/')
-      //     : req.url;
+			// Middleware for subPath handling
+			// app.use((req, res, next) => {
+			//   if (config.subPath && !req.url.startsWith(`/${config.subPath}/`)) {
+			//     return next(); // Not a matching path; skip handling
+			//   }
 
-      //   next();
-      // });
+			//   // Rewrite the URL to remove the subPath prefix
+			//   req.url = config.subPath
+			//     ? req.url.replace(new RegExp(`^/${config.subPath}/`), '/')
+			//     : req.url;
 
-      // Hook into `options.servers.http`
-      config.servers.http(async (request, nextHandler) => {
-        const { _nodeRequest: req, _nodeResponse: res } = request;
+			//   next();
+			// });
 
-        app.handle(req, res, (err) => {
-          if (err) {
-            console.error(`Error handling request: ${err.message}`);
-            res.statusCode = 500;
-            res.end('Internal Server Error');
-          } else {
-            nextHandler(request);
-          }
-        });
-      });
+			// Hook into `options.servers.http`
+			config.servers.http(async (request, nextHandler) => {
+				const { _nodeRequest: req, _nodeResponse: res } = request;
 
-      // Start the Express server
-      const port = config.port;
-      app.listen(port, () => {
-        console.log(`Express.js server is running on port ${port}`);
-      });
+				app.handle(req, res, (err) => {
+					if (err) {
+						console.error(`Error handling request: ${err.message}`);
+						res.statusCode = 500;
+						res.end('Internal Server Error');
+					} else {
+						nextHandler(request);
+					}
+				});
+			});
 
-      return true;
-    },
-  };
+			// Start the Express server
+			const port = config.port;
+			app.listen(port, () => {
+				console.log(`Express.js server is running on port ${port}`);
+			});
+
+			return true;
+		},
+	};
 }
