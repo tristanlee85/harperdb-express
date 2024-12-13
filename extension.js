@@ -1,22 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert';
-import { createRequire } from 'node:module';
 import express from 'express';
 import proxy from 'express-http-proxy';
-import * as cheerio from 'cheerio';
 
 /**
  * Logger override for logging in this extension.
  */
 logger.info = (message) => {
-	console.log(`[harperdb-express] ${message}`);
+	console.log(`[harperdb-proxy-transform] ${message}`);
 };
 logger.debug = (message) => {
-	console.log(`[harperdb-express] ${message}`);
+	console.log(`[harperdb-proxy-transform] ${message}`);
 };
 logger.error = (message) => {
-	console.error(`[harperdb-express] ${message}`);
+	console.error(`[harperdb-proxy-transform] ${message}`);
 };
 
 /**
