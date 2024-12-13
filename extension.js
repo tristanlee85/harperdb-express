@@ -135,12 +135,12 @@ export function start(options = {}) {
 			// User-defined middleware
 			if (!!config.middlewarePath) {
 				// Check to ensure the middleware path is a valid file
-				if (!fs.existsSync(config.middlewarePath) || !fs.statSync(config.middlewarePath).isFile()) {
-					throw new Error(`Invalid middleware path: ${config.middlewarePath}`);
+				const importPath = path.resolve(componentPath, config.middlewarePath);
+				if (!fs.existsSync(importPath) || !fs.statSync(importPath).isFile()) {
+					throw new Error(`Invalid middleware path: ${importPath}`);
 				}
 
 				// Middleware must be be a module with a default export
-				const importPath = path.resolve(componentPath, config.middlewarePath);
 				const middleware = (await import(importPath)).default;
 
 				if (typeof middleware !== 'function') {
@@ -153,12 +153,12 @@ export function start(options = {}) {
 			// User-defined transformer
 			if (!!config.transformerPath) {
 				// Check to ensure the transformer path is a valid file
-				if (!fs.existsSync(config.transformerPath) || !fs.statSync(config.transformerPath).isFile()) {
-					throw new Error(`Invalid transformer path: ${config.transformerPath}`);
+				const importPath = path.resolve(componentPath, config.transformerPath);
+				if (!fs.existsSync(importPath) || !fs.statSync(importPath).isFile()) {
+					throw new Error(`Invalid transformer path: ${importPath}`);
 				}
 
 				// Transformer must be be a module with a default export
-				const importPath = path.resolve(componentPath, config.transformerPath);
 				const { transformRequestOptions, transformRequestPath, transformResponse } = await import(importPath);
 
 				transformReqOptionsFn = transformRequestOptions;
