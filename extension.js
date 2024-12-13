@@ -6,13 +6,30 @@ import express from 'express';
 import proxy from 'express-http-proxy';
 import * as cheerio from 'cheerio';
 
-// Override the default `logger` functions to prepend the extension name
+/**
+ * Logger override for logging in this extension.
+ */
 logger.info = (message) => {
-	console.log(`[@harperdb/express] ${message}`);
+	console.log(`[harperdb-express] ${message}`);
+};
+logger.debug = (message) => {
+	console.log(`[harperdb-express] ${message}`);
 };
 logger.error = (message) => {
-	console.error(`[@harperdb/express] ${message}`);
+	console.error(`[harperdb-express] ${message}`);
 };
+
+/**
+ * @typedef {Object} Transformer
+ * @property {function(RequestOptions): RequestOptions} transformRequestOptions - Function to transform request options.
+ * @property {function(Request): string} transformRequestPath - Function to transform request path.
+ * @property {function(ProxyRes, ProxyResData, UserReq, UserRes): string} transformResponse - Function to transform response.
+ */
+
+/**
+ * @typedef {Object} Middleware
+ * @property {function(Request, Response, NextFunction): void} middleware - Function to transform request options.
+ */
 
 /**
  * Define a list of allowed hosts to validate an incoming `x-forwarded-host`
@@ -24,11 +41,25 @@ logger.error = (message) => {
 const allowedHosts = new Set(['83c5-2600-1700-f2e0-b0f-74f7-c2c1-a4ad-e69d.ngrok-free.app']);
 
 /**
+ *
+ * The 'proxy' library accepts a function to determine the proxy host.
+ *
+ * @param {IncomingMessage} param0
+ * @returns {string} Hostname
+ */
+const determineProxyHost = ({ headers }) => {
+	// Return the hostname (TODO: make this more dynamic)
+	return 'https://www.google.com';
+};
+
+/**
  * @typedef {Object} ExtensionOptions - The configuration options for the extension.
  * @property {number=} port - A port for the Express.js server. Defaults to 3000.
  * @property {string=} subPath - A sub path for serving requests from. Defaults to `''`.
  * @property {string=} middlewarePath - A path to a middleware file to be used by the Express.js server.
+ * @property {string=} transformerPath - A path to a transformer file to be used by the Express.js server.
  * @property {string=} staticPath - A path to a static files directory to be served by the Express.js server.
+ * @property {Array<{pattern: string, host: string}>} routes - Configurable routes for proxying requests.
  */
 
 /**
@@ -53,7 +84,9 @@ function resolveConfig(options) {
 	assertType('port', options.port, 'number');
 	assertType('subPath', options.subPath, 'string');
 	assertType('middlewarePath', options.middlewarePath, 'string');
+	assertType('transformerPath', options.transformerPath, 'string');
 	assertType('staticPath', options.staticPath, 'string');
+	assertType('routes', options.routes, 'object');
 
 	// Remove leading and trailing slashes from subPath
 	if (options.subPath?.[0] === '/') {
@@ -67,7 +100,9 @@ function resolveConfig(options) {
 		port: options.port ?? 3000,
 		subPath: options.subPath ?? '',
 		middlewarePath: options.middlewarePath ?? '',
+		transformerPath: options.transformerPath ?? '',
 		staticPath: options.staticPath ?? '',
+		routes: options.routes ?? [],
 	};
 }
 
@@ -90,39 +125,14 @@ export function start(options = {}) {
 	return {
 		async handleDirectory(_, componentPath) {
 			logger.info(`Setting up Express.js app...`);
+			let middlewareFn;
+			let transformReqOptionsFn;
+			let transformReqPathFn;
+			let transformResFn;
 
 			if (!fs.existsSync(componentPath) || !fs.statSync(componentPath).isDirectory()) {
 				throw new Error(`Invalid component path: ${componentPath}`);
 			}
-
-			const app = express();
-
-			// Middleware for subPath handling
-			app.use((req, res, next) => {
-				if (config.subPath && !req.url.startsWith(`/${config.subPath}/`)) {
-					return next(); // Not a matching path; skip handling
-				}
-
-				// Rewrite the URL to remove the subPath prefix
-				req.url = config.subPath ? req.url.replace(new RegExp(`^/${config.subPath}/`), '/') : req.url;
-
-				next();
-			});
-
-			// // Middleware to validate host
-			// app.use((req, res, next) => {
-			//   const host = req.headers['x-forwarded-host'] || req.hostname;
-			//   if (!allowedHosts.has(host)) {
-			//     console.error(`Rejected request from unauthorized host: ${host}`);
-			//     return res.status(403).send('Forbidden');
-			//   }
-			//   next();
-			// });
-
-			app.use((req, res, next) => {
-				res.body = `Hello World from ${req.url}`;
-				next();
-			});
 
 			// User-defined middleware
 			if (!!config.middlewarePath) {
@@ -139,26 +149,102 @@ export function start(options = {}) {
 					throw new Error(`Middleware must be a function. Received: ${typeof middleware}`);
 				}
 
-				logger.info(`Using middleware: ${config.middlewarePath}`);
-				app.use(middleware);
+				middlewareFn = middleware;
 			}
 
-			// // Middleware for proxying and DOM manipulation
-			// app.use(
-			//   proxy('https://example.com', {
-			//     proxyReqPathResolver: (req) => req.url,
-			//     userResDecorator: async (proxyRes, proxyResData, req, res) => {
-			//       const contentType = proxyRes.headers['content-type'] || '';
-			//       if (contentType.includes('text/html')) {
-			//         const $ = cheerio.load(proxyResData.toString('utf-8'));
-			//         // Example DOM manipulation
-			//         $('title').text('Modified Title');
-			//         return $.html();
-			//       }
-			//       return proxyResData;
-			//     },
-			//   })
-			// );
+			// User-defined transformer
+			if (!!config.transformerPath) {
+				// Check to ensure the transformer path is a valid file
+				if (!fs.existsSync(config.transformerPath) || !fs.statSync(config.transformerPath).isFile()) {
+					throw new Error(`Invalid transformer path: ${config.transformerPath}`);
+				}
+
+				// Transformer must be be a module with a default export
+				const importPath = path.resolve(componentPath, config.transformerPath);
+				const { transformRequestOptions, transformRequestPath, transformResponse } = await import(importPath);
+
+				console.log('transformRequestOptions', transformRequestOptions);
+				console.log('transformRequestPath', transformRequestPath);
+				console.log('transformResponse', transformResponse);
+
+				transformReqOptionsFn = transformRequestOptions;
+				transformReqPathFn = transformRequestPath;
+				transformResFn = transformResponse;
+			}
+
+			const app = express();
+
+			// Middleware for subPath handling
+			app.use((req, res, next) => {
+				if (config.subPath && !req.url.startsWith(`/${config.subPath}/`)) {
+					return next(); // Not a matching path; skip handling
+				}
+
+				// Rewrite the URL to remove the subPath prefix
+				req.url = config.subPath ? req.url.replace(new RegExp(`^/${config.subPath}/`), '/') : req.url;
+
+				next();
+			});
+
+			// Middleware to validate host
+			app.use((req, res, next) => {
+				const host = req.headers['x-forwarded-host'] || req.hostname;
+				if (!allowedHosts.has(host)) {
+					console.error(`Rejected request from unauthorized host: ${host}`);
+					//return res.status(403).send('Forbidden');
+				}
+				next();
+			});
+
+			if (middlewareFn) {
+				logger.info(`Using middleware: ${config.middlewarePath}`);
+				app.use(middlewareFn);
+			}
+
+			app.use(
+				proxy(determineProxyHost, {
+					/**
+					 *
+					 * Set the 'accept-encoding' header so that the origin hopefully
+					 * responds with gzip data so the 'proxy' library can decompress the
+					 * stream as part of the PoC.
+					 *
+					 */
+					proxyReqOptDecorator: (proxyReqOpts) => {
+						proxyReqOpts.headers['accept-encoding'] = 'gzip';
+						return transformReqOptionsFn ? transformReqOptionsFn(proxyReqOpts) : proxyReqOpts;
+					},
+
+					proxyReqPathResolver: (req) => {
+						return transformReqPathFn ? transformReqPathFn(req) : req.url;
+					},
+
+					userResDecorator: (proxyRes, proxyResData, userReq, userRes) => {
+						return transformResFn ? transformResFn(proxyRes, proxyResData, userReq, userRes) : proxyResData;
+					},
+				})
+			);
+
+			// Configure route patterns with proxying and response handling
+			// config.routes.forEach(({ pattern, host }) => {
+			// 	logger.info(`Setting up route: ${pattern} -> ${host}`);
+			// 	app.use(
+			// 		pattern,
+			// 		proxy(host, {
+			// 			proxyReqPathResolver: (req) => req.url,
+			// 			// userResDecorator: async (proxyRes, proxyResData, req, res) => {
+			// 			// 	const contentType = proxyRes.headers['content-type'] || '';
+			// 			// 	if (contentType.includes('text/html')) {
+			// 			// 		const $ = cheerio.load(proxyResData.toString('utf-8'));
+			// 			// 		// Example: Append a custom footer to the page
+			// 			// 		$('body').append('<footer>Custom Footer</footer>');
+			// 			// 		return $.html();
+			// 			// 	}
+			// 			// 	return proxyResData;
+			// 			// },
+			// 		})
+			// 	);
+			// });
 
 			// Middleware for static files
 			if (!!config.staticPath) {

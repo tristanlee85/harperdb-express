@@ -18,11 +18,11 @@
 		"config.yaml",
 		"extension.js"
 	],
-	"name": "@harperdb/express",
+	"name": "harperdb-proxy-transform",
 	"prettier": "@harperdb/code-guidelines/prettier",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/tristanlee85/harperdb-express.git"
+		"url": "git+https://github.com/tristanlee85/harperdb-proxy-transform.git"
 	},
 	"scripts": {
 		"format": "prettier .",
