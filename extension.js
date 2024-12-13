@@ -5,17 +5,14 @@ import express from 'express';
 import proxy from 'express-http-proxy';
 
 /**
- * Logger override for logging in this extension.
+ * Patch `logger` methods to include prefix
  */
-logger.info = (message) => {
-	console.log(`[harperdb-proxy-transform] ${message}`);
-};
-logger.debug = (message) => {
-	console.log(`[harperdb-proxy-transform] ${message}`);
-};
-logger.error = (message) => {
-	console.error(`[harperdb-proxy-transform] ${message}`);
-};
+['info', 'debug', 'error'].forEach((method) => {
+	const fn = logger[method];
+	logger[method] = (message) => {
+		fn(`[harperdb-proxy-transform] ${message}`);
+	};
+});
 
 /**
  * @typedef {Object} Transformer
@@ -57,7 +54,7 @@ const determineProxyHost = ({ headers }) => {
  * @property {string=} middlewarePath - A path to a middleware file to be used by the Express.js server.
  * @property {string=} transformerPath - A path to a transformer file to be used by the Express.js server.
  * @property {string=} staticPath - A path to a static files directory to be served by the Express.js server.
- * @property {Array<{pattern: string, host: string}>} routes - Configurable routes for proxying requests.
+ * TODO: @property {Array<{pattern: string, host: string}>} routes - Configurable routes for proxying requests.
  */
 
 /**
@@ -84,7 +81,7 @@ function resolveConfig(options) {
 	assertType('middlewarePath', options.middlewarePath, 'string');
 	assertType('transformerPath', options.transformerPath, 'string');
 	assertType('staticPath', options.staticPath, 'string');
-	assertType('routes', options.routes, 'object');
+	// TODO: assertType('routes', options.routes, 'object');
 
 	// Remove leading and trailing slashes from subPath
 	if (options.subPath?.[0] === '/') {
@@ -100,7 +97,7 @@ function resolveConfig(options) {
 		middlewarePath: options.middlewarePath ?? '',
 		transformerPath: options.transformerPath ?? '',
 		staticPath: options.staticPath ?? '',
-		routes: options.routes ?? [],
+		// TODO: routes: options.routes ?? [],
 	};
 }
 
