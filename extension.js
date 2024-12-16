@@ -3,6 +3,7 @@ import path from 'node:path';
 import assert from 'node:assert';
 import express from 'express';
 import proxy from 'express-http-proxy';
+import { getPortPromise as getPort } from 'portfinder';
 
 /**
  * Patch `logger` methods to include prefix
@@ -263,8 +264,14 @@ export function start(options = {}) {
 				});
 			});
 
-			// Start the Express server
-			const port = config.port;
+			// Start the Express server on the available port
+			const startPort = config.port;
+			const port = await getPort({ startPort, stopPort: startPort + 5 });
+
+			if (port !== startPort) {
+				logger.warn(`Port ${startPort} is already in use. Using port ${port} instead.`);
+			}
+
 			app.listen(port, () => {
 				logger.info(`Express.js server is running on port ${port}`);
 			});
