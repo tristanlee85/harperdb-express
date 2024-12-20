@@ -1,13 +1,10 @@
 {
 	"name": "harperdb-proxy-transform",
 	"version": "1.0.0",
-	"author": {
-		"email": "tristanlee85@gmail.com",
-		"name": "Tristan Lee"
-	},
+	"author": {},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/tristanlee85/harperdb-proxy-transform.git"
+		"url": "git+https://github.com/Solara6/harperdb-proxy-transform.git"
 	},
 	"devDependencies": {
 		"@harperdb/code-guidelines": "^0.0.2",

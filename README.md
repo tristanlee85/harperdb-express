@@ -4,17 +4,14 @@ A [HarperDB Component](https://docs.harperdb.io/docs/developers/components) for 
 
 ## Usage
 
-> [!NOTE]
-> This guide assumes you're already familiar with [HarperDb Components](https://docs.harperdb.io/docs/developers/components). Check out [`harperdb-proxy-transform-example`](https://github.com/tristanlee85/harperdb-proxy-transform-example) for more information.
-
 1. Add this extension to your HarperDB project using your package manager:
 
 ```sh
-npm install git+ssh://git@github.com:tristanlee85/harperdb-proxy-transform.git --save
+npm install git+ssh://git@github.com:Solara6/harperdb-proxy-transform.git --save
 # or
-yarn add git+ssh://git@github.com:tristanlee85/harperdb-proxy-transform.git
+yarn add git+ssh://git@github.com:Solara6/harperdb-proxy-transform.git
 # or
-pnpm add git+ssh://git@github.com:tristanlee85/harperdb-proxy-transform.git
+pnpm add git+ssh://git@github.com:Solara6/harperdb-proxy-transform.git
 ```
 
 2. Add to `config.yaml`:
