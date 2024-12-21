@@ -4,6 +4,8 @@ import assert from 'node:assert';
 import http from 'node:http';
 import https from 'node:https';
 import { decompress, compress } from './utils/compression';
+import { ConfigLoader } from './config';
+import { getHandlersFromConfig } from './handlers';
 
 declare const logger: any;
 
@@ -19,10 +21,10 @@ const [logInfo, logDebug, logError, logWarn] = ['info', 'debug', 'error', 'warn'
 
 /**
  * @typedef {Object} ExtensionOptions - The configuration options for the extension.
- * @property {string=} transformerPath - A path to a transformer file to be used by the Express.js server.
+ * @property {string=} configPath - Path to a configuration file to be used by the extension.
  */
 export type ExtensionOptions = {
-	transformerPath?: string;
+	configPath?: string;
 };
 
 /**
@@ -44,10 +46,10 @@ function assertType(name: string, option: any, expectedType: string) {
  * @returns {Required<ExtensionOptions>}
  */
 function resolveConfig(options: ExtensionOptions) {
-	assertType('transformerPath', options.transformerPath, 'string');
+	assertType('configPath', options.configPath, 'string');
 
 	return {
-		transformerPath: options.transformerPath ?? '',
+		configPath: options.configPath ?? 'hdb.edgio.config.js',
 	};
 }
 
@@ -69,6 +71,12 @@ export function start(options: any) {
 
 	return {
 		async handleDirectory(_: any, componentPath: string) {
+			const proxyConfig = await ConfigLoader.loadConfig(config.configPath);
+
+			// Prepare the transform handlers
+			const transformHandlers = await getHandlersFromConfig(proxyConfig);
+			console.log('transformHandlers', transformHandlers);
+
 			let transformReqFn: ((req: any) => Promise<void>) | undefined;
 			let transformResFn: ((rawBody: Buffer, res: any, req: any) => Promise<Buffer | string | undefined>) | undefined;
 
@@ -76,26 +84,16 @@ export function start(options: any) {
 				throw new Error(`Invalid component path: ${componentPath}`);
 			}
 
-			// User-defined transformer
-			if (!!config.transformerPath) {
-				// Check to ensure the transformer path is a valid file
-				const importPath = path.resolve(componentPath, config.transformerPath);
-				if (!fs.existsSync(importPath) || !fs.statSync(importPath).isFile()) {
-					throw new Error(`Invalid transformer path: ${importPath}`);
-				}
-
-				// Transformer must be be a module with named exports
-				const { transformRequest, transformResponse } = await import(importPath);
-
-				transformReqFn = transformRequest;
-				transformResFn = transformResponse;
-			}
-
 			// Hook into `options.server.http`
 			options.server.http(async (request: any, nextHandler: any) => {
 				const { _nodeRequest: req, _nodeResponse: res } = request;
 
-				const { transformRequest, transformResponse } = request.edgio?.proxyHandler ?? {};
+				// TODO: determine origin and transform handlers to use
+
+				// TODO: the request will contain reference to which transform handlers to use
+				// TODO this proxy logic will be moved into the class implementation
+				// for abstrations of non-proxy handlers (eg compute, redirect, etc)
+				const { transformRequest, transformResponse } = {} as any;
 
 				// Per-request transformers should override those defined in the extension
 				if (transformRequest) {
@@ -112,7 +110,7 @@ export function start(options: any) {
 						await transformReqFn(req);
 					}
 
-					// TODO: this property will should be defined by the edge-control-parser extension
+					// TODO: the request will contain reference to which upstream to use
 					const scheme = 'https';
 					const host = 'www.google.com';
 					req.headers.host = host;

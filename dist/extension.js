@@ -1,6 +1,5 @@
 // src/extension.ts
-import fs from "node:fs";
-import path from "node:path";
+import fs2 from "node:fs";
 import assert from "node:assert";
 import http from "node:http";
 import https from "node:https";
@@ -32,6 +31,122 @@ async function compress(body, encoding) {
   }
 }
 
+// src/config.ts
+import path from "node:path";
+
+class ConfigLoader {
+  static instance;
+  static async loadConfig(configPath) {
+    return this.instance = await import(path.resolve(process.cwd(), configPath));
+  }
+}
+
+// src/handlers.ts
+import { spawnSync } from "child_process";
+import path2 from "node:path";
+import { tmpdir } from "os";
+import fs from "fs/promises";
+var handlerBuildCache = new Map;
+
+class BaseHandlerImpl {
+  _handlerName;
+  _handler;
+  constructor(handlerName, handlerPath) {
+    this._handlerName = handlerName;
+    this._handler = buildAndImportHandler(handlerPath);
+  }
+  async handleRequest(request, response) {
+    throw new Error("Not implemented");
+  }
+  get handler() {
+    return this._handler;
+  }
+}
+
+class ProxyHandlerImpl extends BaseHandlerImpl {
+  static HINT = "proxy";
+  constructor(handlerName, handlerPath) {
+    super(handlerName, handlerPath);
+    this._handler = this._handler.then((handler) => {
+      logger.debug(`Proxy handler '${handlerName}' built successfully.`);
+    }).catch((err) => {
+      logger.error(`Unable to compile '${handlerPath}': ${err}`);
+      handlerBuildCache.delete(handlerPath);
+      return;
+    });
+  }
+  get transformRequest() {
+    return async (request) => {
+      const handlerModule = await this.handler;
+      return handlerModule.transformRequest(request);
+    };
+  }
+  get transformResponse() {
+    return async (rawBody, response, request) => {
+      const handlerModule = await this.handler;
+      return handlerModule.transformResponse(rawBody, response, request);
+    };
+  }
+  async handleRequest(request, response) {
+  }
+}
+
+class ComputeHandlerImpl extends BaseHandlerImpl {
+  static HINT = "compute";
+  constructor(handlerName, handlerPath) {
+    super(handlerName, handlerPath);
+    this._handler.then((handler) => {
+      logger.debug(`Compute handler '${handlerName}' built successfully.`);
+      return handler;
+    }).catch((err) => {
+      logger.error(`Unable to compile '${handlerPath}': ${err}`);
+      handlerBuildCache.delete(handlerPath);
+    });
+  }
+  async handleRequest(request, response) {
+  }
+}
+async function getHandlersFromConfig(config) {
+  const handlerTypes = [ComputeHandlerImpl, ProxyHandlerImpl];
+  const handlers = config.transforms;
+  const handlerInstances = Object.entries(handlers).map(([handlerName, handlerPath]) => {
+    const [handlerType, handlerId] = handlerName.split(":");
+    if (!handlerType || !handlerId) {
+      throw new Error(`Invalid handler name: ${handlerName}`);
+    }
+    const MatchedHandler = handlerTypes.find((handler) => handler.HINT === handlerType);
+    if (!MatchedHandler) {
+      throw new Error(`Invalid handler type: ${handlerType}. Valid types are: ${handlerTypes.map((handler) => handler.HINT).join(", ")}`);
+    }
+    const handlerInstance = new MatchedHandler(handlerName, handlerPath);
+    return [handlerName, handlerInstance];
+  });
+  const resolvedHandlers = await Promise.all(handlerInstances.map(([handlerName, handlerInstance]) => handlerInstance.handler));
+  return Object.fromEntries(resolvedHandlers);
+}
+async function buildAndImportHandler(handlerPath) {
+  if (handlerBuildCache.has(handlerPath)) {
+    return handlerBuildCache.get(handlerPath);
+  }
+  const buildPromise = new Promise(async (resolve, reject) => {
+    const tmpOutputPath = path2.join(tmpdir(), `handler_${Date.now()}.mjs`);
+    handlerPath = path2.resolve(handlerPath);
+    const buildResult = spawnSync("bun", ["build", handlerPath, "--target", "node", "--format", "esm", "--outfile", tmpOutputPath], {
+      encoding: "utf-8"
+    });
+    if (buildResult.error || buildResult.status !== 0) {
+      reject(new Error(`Unable to compile '${handlerPath}': ${buildResult.stderr || buildResult.error?.message}`));
+      return;
+    }
+    const module = await import(`file://${tmpOutputPath}`);
+    await fs.unlink(tmpOutputPath).catch(() => {
+    });
+    resolve(module.default || module);
+  });
+  handlerBuildCache.set(handlerPath, buildPromise);
+  return buildPromise;
+}
+
 // src/extension.ts
 var [logInfo, logDebug, logError, logWarn] = ["info", "debug", "error", "warn"].map((method) => {
   const fn = logger[method];
@@ -46,9 +161,9 @@ function assertType(name, option, expectedType) {
   }
 }
 function resolveConfig(options) {
-  assertType("transformerPath", options.transformerPath, "string");
+  assertType("configPath", options.configPath, "string");
   return {
-    transformerPath: options.transformerPath ?? ""
+    configPath: options.configPath ?? "hdb.edgio.config.js"
   };
 }
 function start(options) {
@@ -56,23 +171,17 @@ function start(options) {
   logInfo(`Starting extension...`);
   return {
     async handleDirectory(_, componentPath) {
+      const proxyConfig = await ConfigLoader.loadConfig(config.configPath);
+      const transformHandlers = await getHandlersFromConfig(proxyConfig);
+      console.log("transformHandlers", transformHandlers);
       let transformReqFn;
       let transformResFn;
-      if (!fs.existsSync(componentPath) || !fs.statSync(componentPath).isDirectory()) {
+      if (!fs2.existsSync(componentPath) || !fs2.statSync(componentPath).isDirectory()) {
         throw new Error(`Invalid component path: ${componentPath}`);
-      }
-      if (!!config.transformerPath) {
-        const importPath = path.resolve(componentPath, config.transformerPath);
-        if (!fs.existsSync(importPath) || !fs.statSync(importPath).isFile()) {
-          throw new Error(`Invalid transformer path: ${importPath}`);
-        }
-        const { transformRequest, transformResponse } = await import(importPath);
-        transformReqFn = transformRequest;
-        transformResFn = transformResponse;
       }
       options.server.http(async (request, nextHandler) => {
         const { _nodeRequest: req, _nodeResponse: res } = request;
-        const { transformRequest, transformResponse } = request.edgio?.proxyHandler ?? {};
+        const { transformRequest, transformResponse } = {};
         if (transformRequest) {
           transformReqFn = transformRequest;
         }

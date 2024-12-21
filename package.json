@@ -29,6 +29,7 @@
 	},
 	"type": "module",
 	"dependencies": {
+		"bun": "^1.1.41",
 		"chokidar-cli": "^3.0.0"
 	}
 }
