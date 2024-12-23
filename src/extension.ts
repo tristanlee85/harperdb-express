@@ -5,7 +5,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { decompress, compress } from './utils/compression';
 import { ConfigLoader } from './config';
-import { getHandlersFromConfig } from './handlers';
+import { getHandler, loadHandlersFromConfig } from './handlers';
 
 declare const logger: any;
 
@@ -25,6 +25,7 @@ const [logInfo, logDebug, logError, logWarn] = ['info', 'debug', 'error', 'warn'
  */
 export type ExtensionOptions = {
 	configPath?: string;
+	edgioConfigPath?: string;
 };
 
 /**
@@ -49,7 +50,8 @@ function resolveConfig(options: ExtensionOptions) {
 	assertType('configPath', options.configPath, 'string');
 
 	return {
-		configPath: options.configPath ?? 'hdb.edgio.config.js',
+		configPath: options.configPath ?? 'edgio.proxy.config.js',
+		edgioConfigPath: options.edgioConfigPath ?? 'edgio.config.js',
 	};
 }
 
@@ -74,11 +76,8 @@ export function start(options: any) {
 			const proxyConfig = await ConfigLoader.loadConfig(config.configPath);
 
 			// Prepare the transform handlers
-			const transformHandlers = await getHandlersFromConfig(proxyConfig);
+			const transformHandlers = await loadHandlersFromConfig(proxyConfig);
 			console.log('transformHandlers', transformHandlers);
-
-			let transformReqFn: ((req: any) => Promise<void>) | undefined;
-			let transformResFn: ((rawBody: Buffer, res: any, req: any) => Promise<Buffer | string | undefined>) | undefined;
 
 			if (!fs.existsSync(componentPath) || !fs.statSync(componentPath).isDirectory()) {
 				throw new Error(`Invalid component path: ${componentPath}`);
@@ -88,94 +87,12 @@ export function start(options: any) {
 			options.server.http(async (request: any, nextHandler: any) => {
 				const { _nodeRequest: req, _nodeResponse: res } = request;
 
-				// TODO: determine origin and transform handlers to use
+				// TODO: the rule provided will contain the handler name
+				const name = 'myProxyHandler';
+				console.log('name', name);
 
-				// TODO: the request will contain reference to which transform handlers to use
-				// TODO this proxy logic will be moved into the class implementation
-				// for abstrations of non-proxy handlers (eg compute, redirect, etc)
-				const { transformRequest, transformResponse } = {} as any;
-
-				// Per-request transformers should override those defined in the extension
-				if (transformRequest) {
-					transformReqFn = transformRequest;
-				}
-				if (transformResponse) {
-					transformResFn = transformResponse;
-				}
-
-				try {
-					logDebug(`Incoming request: ${req.url.split('?')[0]}`);
-
-					if (transformReqFn) {
-						await transformReqFn(req);
-					}
-
-					// TODO: the request will contain reference to which upstream to use
-					const scheme = 'https';
-					const host = 'www.google.com';
-					req.headers.host = host;
-
-					const protocol = scheme === 'https' ? https : http;
-
-					const upstreamOptions = {
-						method: req.method,
-						hostname: host,
-						port: scheme === 'https' ? 443 : 80,
-						path: req.url,
-						headers: req.headers,
-					};
-
-					const proxyReq = protocol.request(upstreamOptions, (proxyRes) => {
-						logDebug(`Received response from upstream: ${proxyRes.statusCode}`);
-
-						const encoding = proxyRes.headers['content-encoding'];
-						const chunks: any[] = [];
-						proxyRes.on('data', (chunk) => chunks.push(chunk));
-
-						proxyRes.on('end', async () => {
-							let body = Buffer.concat(chunks);
-
-							if (transformResFn) {
-								const decompressedBody = await decompress(body, encoding ?? '');
-								let transformedBody = await transformResFn(decompressedBody, proxyRes, proxyReq);
-
-								if (transformedBody && transformedBody !== body) {
-									transformedBody = Buffer.isBuffer(transformedBody) ? transformedBody : Buffer.from(transformedBody);
-									const compressedBody = await compress(transformedBody, encoding ?? '');
-
-									const headers = { ...proxyRes.headers };
-									if (encoding) {
-										headers['content-encoding'] = encoding;
-										headers['content-length'] = Buffer.byteLength(compressedBody).toString();
-									} else {
-										delete headers['content-encoding'];
-										headers['content-length'] = Buffer.byteLength(compressedBody).toString();
-									}
-
-									res.writeHead(proxyRes.statusCode, headers);
-									res.end(compressedBody);
-									return;
-								}
-							}
-
-							res.writeHead(proxyRes.statusCode, proxyRes.headers);
-							res.end(body);
-						});
-					});
-
-					req.pipe(proxyReq);
-
-					proxyReq.on('error', (err: any) => {
-						logError(`Proxy request error: ${err}`);
-						res.statusCode = 502;
-						res.end('Bad Gateway');
-					});
-				} catch (error) {
-					// General error handling
-					logError(`Error handling proxy request: ${error}`);
-					res.statusCode = 500;
-					res.end('Internal Server Error');
-				}
+				const handler = await getHandler(name);
+				await handler.handleRequest(req, res);
 			});
 
 			return true;

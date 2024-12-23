@@ -1,28 +1,35 @@
 import { IncomingMessage, ClientRequest } from 'node:http';
 import { spawnSync } from 'child_process';
 import path from 'node:path';
+import https from 'node:https';
+import http from 'node:http';
 import { tmpdir } from 'os';
 import fs from 'fs/promises';
-import type { ExtensionOptions } from './extension';
-import * as config from '../edgio.proxy.config.js';
 import type { Config } from './config.js';
+import { compress, decompress } from './utils/compression.js';
+import { ConfigLoader } from './config.js';
 
+// Handler import cache by path
 const handlerBuildCache: Map<string, Promise<any>> = new Map();
+
+// Handler instance cache by name
+const handlerInstanceCache: Map<string, BaseHandlerImpl> = new Map();
+
+type OriginConfig = {
+	scheme: string;
+	hostname: string;
+	port: number;
+	overrideHostHeader: string;
+};
 
 type BaseHandler = {
 	handleRequest: (request: ClientRequest, response: IncomingMessage) => Promise<void>;
 };
 
 type ProxyHandler = {
-	transformRequest?: (request: ClientRequest) => Promise<IncomingMessage>;
-	transformResponse?: (
-		rawBody: Buffer,
-		response: IncomingMessage,
-		request: ClientRequest
-	) => Promise<Buffer | string | undefined>;
+	transformRequest?: (request: any) => Promise<IncomingMessage>;
+	transformResponse?: (rawBody: Buffer, response: any, request: any) => Promise<Buffer | string | undefined>;
 };
-
-type ComputeHandler = {};
 
 class BaseHandlerImpl implements BaseHandler {
 	protected _handlerName: string;
@@ -30,7 +37,16 @@ class BaseHandlerImpl implements BaseHandler {
 
 	constructor(handlerName: string, handlerPath: string) {
 		this._handlerName = handlerName;
-		this._handler = buildAndImportHandler(handlerPath);
+		this._handler = buildAndImportHandler(handlerPath)
+			.then((handler) => {
+				logger.debug(`Handler '${handlerName}' built successfully.`);
+				return handler;
+			})
+			.catch((err) => {
+				logger.error(`Unable to compile '${handlerPath}': ${err}`);
+				handlerBuildCache.delete(handlerPath);
+				return;
+			});
 	}
 
 	async handleRequest(request: ClientRequest, response: IncomingMessage) {
@@ -40,138 +56,179 @@ class BaseHandlerImpl implements BaseHandler {
 	get handler() {
 		return this._handler;
 	}
+
+	get name() {
+		return this._handlerName;
+	}
 }
 
 class ProxyHandlerImpl extends BaseHandlerImpl implements ProxyHandler {
 	static HINT = 'proxy';
+	private _originName: string;
 
-	constructor(handlerName: string, handlerPath: string) {
+	constructor(handlerName: string, handlerPath: string, originName: string) {
 		super(handlerName, handlerPath);
-		this._handler = this._handler
-			.then((handler) => {
-				logger.debug(`Proxy handler '${handlerName}' built successfully.`);
-			})
-			.catch((err) => {
-				logger.error(`Unable to compile '${handlerPath}': ${err}`);
-				handlerBuildCache.delete(handlerPath);
-				return;
-			});
+		this._originName = originName;
+	}
+
+	private async getOrigin(): Promise<OriginConfig> {
+		let edgioConfig = await ConfigLoader.loadEdgioConfig();
+
+		const origin = edgioConfig.origins.find((origin: any) => origin.name === this._originName);
+
+		if (!origin) {
+			throw new Error(`Origin '${this._originName}' not found in edgio.config.js`);
+		}
+
+		const scheme = origin.hosts[0].scheme || 'https';
+		const hostname = Array.isArray(origin.hosts[0].location)
+			? origin.hosts[0].location[0].hostname
+			: origin.hosts[0].location;
+		const port = Array.isArray(origin.hosts[0].location) ? origin.hosts[0].location[0].port || 443 : 443;
+		const overrideHostHeader = origin.override_host_header || hostname;
+
+		return { scheme, hostname, port, overrideHostHeader };
 	}
 
 	get transformRequest() {
-		return async (request: ClientRequest) => {
-			const handlerModule = await this.handler;
-			return handlerModule.transformRequest(request);
+		return async (request: any) => {
+			const { transformRequest } = await this.handler;
+
+			if (transformRequest) {
+				return transformRequest(request);
+			}
+
+			return request;
 		};
 	}
 
 	get transformResponse() {
-		return async (rawBody: Buffer, response: IncomingMessage, request: ClientRequest) => {
+		return async (rawBody: any, response: any, request: any) => {
 			const handlerModule = await this.handler;
 			return handlerModule.transformResponse(rawBody, response, request);
 		};
 	}
 
-	async handleRequest(request: ClientRequest, response: IncomingMessage) {
-		// TODO perhaps this could do the proxy instead of the other extension??
+	async handleRequest(request: any, response: any) {
+		const { scheme, hostname, port, overrideHostHeader } = await this.getOrigin();
+
+		// Transform the request prior to proxying to ensure the host header and
+		// origin properties are set correctly
+		await this.transformRequest(request);
+
+		const protocol = scheme === 'https' ? https : http;
+
+		request.headers.host = overrideHostHeader || hostname;
+
+		const upstreamOptions = {
+			method: request.method,
+			hostname,
+			port,
+			path: request.url,
+			headers: request.headers,
+		};
+
+		const proxyReq = protocol.request(upstreamOptions, (proxyRes) => {
+			logger.debug(`Received response from upstream: ${proxyRes.statusCode}`);
+
+			const encoding = proxyRes.headers['content-encoding'];
+			const chunks: any[] = [];
+			proxyRes.on('data', (chunk) => chunks.push(chunk));
+
+			proxyRes.on('end', async () => {
+				let body = Buffer.concat(chunks);
+
+				const decompressedBody = await decompress(body, encoding ?? '');
+				let transformedBody = await this.transformResponse(decompressedBody, proxyRes, proxyReq);
+
+				if (transformedBody && transformedBody !== body) {
+					transformedBody = Buffer.isBuffer(transformedBody) ? transformedBody : Buffer.from(transformedBody);
+					const compressedBody = await compress(transformedBody, encoding ?? '');
+
+					const headers = { ...proxyRes.headers };
+					if (encoding) {
+						headers['content-encoding'] = encoding;
+						headers['content-length'] = Buffer.byteLength(compressedBody).toString();
+					} else {
+						delete headers['content-encoding'];
+						headers['content-length'] = Buffer.byteLength(compressedBody).toString();
+					}
+
+					response.writeHead(proxyRes.statusCode, headers);
+					response.end(compressedBody);
+					return;
+				}
+
+				response.writeHead(proxyRes.statusCode, proxyRes.headers);
+				response.end(body);
+			});
+		});
+
+		request.pipe(proxyReq);
+
+		proxyReq.on('error', (err: any) => {
+			logger.error(`Proxy request error: ${err}`);
+			response.statusCode = 502;
+			response.end('Bad Gateway');
+		});
 	}
 }
 
-class ComputeHandlerImpl extends BaseHandlerImpl implements ComputeHandler {
+class ComputeHandlerImpl extends BaseHandlerImpl {
 	static HINT = 'compute';
 
 	constructor(handlerName: string, handlerPath: string) {
 		super(handlerName, handlerPath);
-		this._handler
-			.then((handler) => {
-				logger.debug(`Compute handler '${handlerName}' built successfully.`);
-				return handler;
-			})
-			.catch((err) => {
-				logger.error(`Unable to compile '${handlerPath}': ${err}`);
-				handlerBuildCache.delete(handlerPath);
-			});
 	}
 
-	async handleRequest(request: ClientRequest, response: IncomingMessage) {
-		// TODO
+	async handleRequest(request: any, response: any) {
+		this.handler.then((handler) => {
+			// User is responsible for writing the response
+			handler(request, response);
+		});
 	}
 }
 
-// export class Handler {
-// 	private _handler: BaseHandler;
+export async function loadHandlersFromConfig(config: Config): Promise<Record<string, BaseHandlerImpl>> {
+	const handlers = config.handlers;
 
-// 	constructor(handler: BaseHandler) {
-// 		this._handler = handler;
-// 	}
+	const handlerInstances = Object.entries(handlers)
+		.map(([name, handler]): [string, BaseHandlerImpl] => {
+			const { type, path, origin } = handler;
 
-// 	// ** TODO: May not be necessary depending on how the rule transform object is defined
-// 	//
-// 	/**
-// 	 * Validate rules and return handlers matching the defined hint types.
-// 	 * @param rules Array of rules to validate
-// 	 * @param config Configuration object
-// 	 * @returns Matched handlers
-// 	 */
-// 	// static validateHandlers(rules: Rule[], config: ExtensionOptions['handlers']): Record<string, BaseHandler> {
-// 	// 	const handlerTypes = [ProxyHandlerImpl, ComputeHandlerImpl];
+			switch (type) {
+				case 'proxy':
+					return [name, new ProxyHandlerImpl(name, path, origin ?? '')];
+				case 'compute':
+					return [name, new ComputeHandlerImpl(name, path)];
+			}
+		})
+		.filter(Boolean);
 
-// 	// 	return rules.reduce(
-// 	// 		(acc, rule) => {
-// 	// 			const handlerName = rule.features?.headers?.set_request_headers?.['+x-cloud-functions-hint'];
-// 	// 			if (!handlerName) return acc;
-
-// 	// 			const [handlerType, handlerId] = handlerName.split(':');
-// 	// 			if (!handlerType || !handlerId) return acc;
-
-// 	// 			const MatchedHandler = handlerTypes.find((handler) => handler.HINT === handlerType);
-
-// 	// 			if (MatchedHandler) {
-// 	// 				const configHandler = config?.[handlerName];
-// 	// 				if (!configHandler) {
-// 	// 					//@ts-ignore
-// 	// 					logger.warn(`Missing handler '${handlerName}' in config.yaml.`);
-// 	// 					return acc;
-// 	// 				}
-
-// 	// 				acc[handlerName] = new MatchedHandler(handlerName, configHandler);
-// 	// 			}
-
-// 	// 			return acc;
-// 	// 		},
-// 	// 		{} as Record<string, BaseHandler>
-// 	// 	);
-// 	// }
-// }
-
-export async function getHandlersFromConfig(config: Config): Promise<Record<string, BaseHandlerImpl>> {
-	const handlerTypes = [ComputeHandlerImpl, ProxyHandlerImpl];
-	const handlers = config.transforms;
-
-	const handlerInstances = Object.entries(handlers).map(([handlerName, handlerPath]): [string, BaseHandlerImpl] => {
-		const [handlerType, handlerId] = handlerName.split(':');
-
-		if (!handlerType || !handlerId) {
-			throw new Error(`Invalid handler name: ${handlerName}`);
-		}
-
-		const MatchedHandler = handlerTypes.find((handler) => handler.HINT === handlerType);
-
-		if (!MatchedHandler) {
-			throw new Error(
-				`Invalid handler type: ${handlerType}. Valid types are: ${handlerTypes.map((handler) => handler.HINT).join(', ')}`
-			);
-		}
-
-		const handlerInstance = new MatchedHandler(handlerName, handlerPath);
-		return [handlerName, handlerInstance];
-	});
-
-	const resolvedHandlers = await Promise.all(
-		handlerInstances.map(([handlerName, handlerInstance]) => handlerInstance.handler)
+	await Promise.all(
+		handlerInstances.map(([name, handlerInstance]) => {
+			handlerInstanceCache.set(name, handlerInstance);
+			return handlerInstance.handler;
+		})
 	);
 
-	return Object.fromEntries(resolvedHandlers);
+	return handlerInstances.reduce(
+		(acc, [name, handlerInstance]): Record<string, BaseHandlerImpl> => {
+			acc[name] = handlerInstance;
+			return acc;
+		},
+		{} as Record<string, BaseHandlerImpl>
+	);
+}
+
+export async function getHandler(name: string): Promise<BaseHandlerImpl> {
+	const handler = handlerInstanceCache.get(name);
+
+	if (!handler) {
+		throw new Error(`Handler '${name}' not found`);
+	}
+
+	return handler;
 }
 
 async function buildAndImportHandler(handlerPath: string): Promise<any> {
