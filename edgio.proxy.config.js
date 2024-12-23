@@ -1,4 +1,11 @@
-export const transforms = {
-	'proxy:0': '/path/to/proxy-transformer.js',
-	'compute:0': '/path/to/compute-transformer.js',
+export const handlers = {
+	myProxyHandler: {
+		type: 'proxy',
+		path: 'transforms.js',
+		origin: 'api',
+	},
+	// myComputeHandler: {
+	//   type: 'compute',
+	//   path: 'compute.js',
+	// },
 };

@@ -20,7 +20,7 @@ pnpm add git+ssh://git@github.com:Solara6/harperdb-proxy-transform.git
 'harperdb-proxy-transform':
   package: 'harperdb-proxy-transform'
   files: /*
-  # transformerPath: transforms.js # default ''
+  # configPath: edgio.proxy.config.js
 ```
 
 3. Run your app with HarperDB:
@@ -33,11 +33,11 @@ harperdb run .
 
 ```ts
 interface ExtensionOptions {
-	transformerPath?: string;
+	configPath: string;
 }
 ```
 
-- `transformerPath`: The path to the transformer file. This file contain named exports that will be used to transform the request and response. See [transformer.js](./transformer.js) for an example.
+- `configPath`: The path to the `edgio.proxy.config.js` file. This file contains the proxy/compute handlers to be used. See [edgio.proxy.config.js](./edgio.proxy.config.js) for an example.
 
 ## Building
 

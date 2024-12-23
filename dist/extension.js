@@ -225,12 +225,6 @@ async function buildAndImportHandler(handlerPath) {
 }
 
 // src/extension.ts
-var [logInfo, logDebug, logError, logWarn] = ["info", "debug", "error", "warn"].map((method) => {
-  const fn = logger[method];
-  return (message) => {
-    fn(`[harperdb-proxy-transform] ${message}`);
-  };
-});
 function assertType(name, option, expectedType) {
   if (option) {
     const found = typeof option;
@@ -246,12 +240,10 @@ function resolveConfig(options) {
 }
 function start(options) {
   const config = resolveConfig(options);
-  logInfo(`Starting extension...`);
   return {
     async handleDirectory(_, componentPath) {
       const proxyConfig = await ConfigLoader.loadConfig(config.configPath);
-      const transformHandlers = await loadHandlersFromConfig(proxyConfig);
-      console.log("transformHandlers", transformHandlers);
+      await loadHandlersFromConfig(proxyConfig);
       if (!fs2.existsSync(componentPath) || !fs2.statSync(componentPath).isDirectory()) {
         throw new Error(`Invalid component path: ${componentPath}`);
       }

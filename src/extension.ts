@@ -1,23 +1,7 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import assert from 'node:assert';
-import http from 'node:http';
-import https from 'node:https';
-import { decompress, compress } from './utils/compression';
 import { ConfigLoader } from './config';
 import { getHandler, loadHandlersFromConfig } from './handlers';
-
-declare const logger: any;
-
-/**
- * Patch `logger` methods to include prefix
- */
-const [logInfo, logDebug, logError, logWarn] = ['info', 'debug', 'error', 'warn'].map((method) => {
-	const fn = logger[method];
-	return (message: string) => {
-		fn(`[harperdb-proxy-transform] ${message}`);
-	};
-});
 
 /**
  * @typedef {Object} ExtensionOptions - The configuration options for the extension.
@@ -69,15 +53,12 @@ function resolveConfig(options: ExtensionOptions) {
 export function start(options: any) {
 	const config = resolveConfig(options);
 
-	logInfo(`Starting extension...`);
-
 	return {
 		async handleDirectory(_: any, componentPath: string) {
 			const proxyConfig = await ConfigLoader.loadConfig(config.configPath);
 
-			// Prepare the transform handlers
-			const transformHandlers = await loadHandlersFromConfig(proxyConfig);
-			console.log('transformHandlers', transformHandlers);
+			// Prepare the proxy/compute handlers
+			await loadHandlersFromConfig(proxyConfig);
 
 			if (!fs.existsSync(componentPath) || !fs.statSync(componentPath).isDirectory()) {
 				throw new Error(`Invalid component path: ${componentPath}`);
