@@ -34,7 +34,7 @@ function resolveConfig(options: ExtensionOptions) {
 	assertType('configPath', options.configPath, 'string');
 
 	return {
-		configPath: options.configPath ?? 'edgio.proxy.config.js',
+		configPath: options.configPath ?? 'hdb-proxy.json',
 		edgioConfigPath: options.edgioConfigPath ?? 'edgio.config.js',
 	};
 }
@@ -59,14 +59,18 @@ export function start(options: any) {
 
 			// Prepare the proxy/compute handlers
 			await loadHandlersFromConfig(proxyConfig);
+			console.log('handlers loaded');
 
 			if (!fs.existsSync(componentPath) || !fs.statSync(componentPath).isDirectory()) {
 				throw new Error(`Invalid component path: ${componentPath}`);
 			}
 
 			// Hook into `options.server.http`
+			console.log('options', options.server);
 			options.server.http(async (request: any, nextHandler: any) => {
 				const { _nodeRequest: req, _nodeResponse: res } = request;
+
+				console.log('request', request);
 
 				// TODO: the rule provided will contain the handler name
 				const name = 'myProxyHandler';

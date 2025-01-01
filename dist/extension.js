@@ -3,13 +3,19 @@ import fs2 from "node:fs";
 import assert from "node:assert";
 
 // src/config.ts
+import fs from "node:fs";
 import path from "node:path";
 
 class ConfigLoader {
   static _edgioConfig;
   static instance;
-  static async loadConfig(configPath) {
-    return this.instance = await import(path.resolve(process.cwd(), configPath));
+  static async loadConfig(configPath = "hdb-proxy.json") {
+    configPath = path.resolve(process.cwd(), configPath);
+    if (!fs.existsSync(configPath)) {
+      throw new Error(`Config file ${configPath} not found. Run 'hdb-proxy bundle' to generate it.`);
+    }
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    return this.instance = config;
   }
   static async loadEdgioConfig() {
     return this._edgioConfig || (this._edgioConfig = (await import(path.resolve(process.cwd(), "edgio.config.js"))).default);
@@ -17,12 +23,8 @@ class ConfigLoader {
 }
 
 // src/handlers.ts
-import { spawnSync } from "child_process";
-import path2 from "node:path";
 import https from "node:https";
 import http from "node:http";
-import { tmpdir } from "os";
-import fs from "fs/promises";
 
 // src/utils/compression.ts
 import zlib from "node:zlib";
@@ -52,22 +54,15 @@ async function compress(body, encoding) {
 }
 
 // src/handlers.ts
-var handlerBuildCache = new Map;
+var importedHandlers = new Map;
 var handlerInstanceCache = new Map;
 
 class BaseHandlerImpl {
   _handlerName;
   _handler;
-  constructor(handlerName, handlerPath) {
-    this._handlerName = handlerName;
-    this._handler = buildAndImportHandler(handlerPath).then((handler) => {
-      logger.debug(`Handler '${handlerName}' built successfully.`);
-      return handler;
-    }).catch((err) => {
-      logger.error(`Unable to compile '${handlerPath}': ${err}`);
-      handlerBuildCache.delete(handlerPath);
-      return;
-    });
+  constructor(name, handler) {
+    this._handlerName = name;
+    this._handler = handler;
   }
   async handleRequest(request, response) {
     throw new Error("Not implemented");
@@ -83,8 +78,8 @@ class BaseHandlerImpl {
 class ProxyHandlerImpl extends BaseHandlerImpl {
   static HINT = "proxy";
   _originName;
-  constructor(handlerName, handlerPath, originName) {
-    super(handlerName, handlerPath);
+  constructor(handlerName, handler, originName) {
+    super(handlerName, handler);
     this._originName = originName;
   }
   async getOrigin() {
@@ -165,34 +160,28 @@ class ProxyHandlerImpl extends BaseHandlerImpl {
 
 class ComputeHandlerImpl extends BaseHandlerImpl {
   static HINT = "compute";
-  constructor(handlerName, handlerPath) {
-    super(handlerName, handlerPath);
+  constructor(name, handler) {
+    super(name, handler);
   }
   async handleRequest(request, response) {
-    this.handler.then((handler) => {
-      handler(request, response);
-    });
+    this.handler(request, response);
   }
 }
 async function loadHandlersFromConfig(config) {
   const handlers = config.handlers;
-  const handlerInstances = Object.entries(handlers).map(([name, handler]) => {
-    const { type, path: path3, origin } = handler;
+  Object.entries(handlers).forEach(async ([name, options]) => {
+    const { type, path: path2, origin } = options;
+    const handler = await import(path2);
     switch (type) {
       case "proxy":
-        return [name, new ProxyHandlerImpl(name, path3, origin ?? "")];
+        handlerInstanceCache[name] = new ProxyHandlerImpl(name, handler, origin ?? "");
+        break;
       case "compute":
-        return [name, new ComputeHandlerImpl(name, path3)];
+        handlerInstanceCache[name] = new ComputeHandlerImpl(name, handler);
+        break;
     }
-  }).filter(Boolean);
-  await Promise.all(handlerInstances.map(([name, handlerInstance]) => {
-    handlerInstanceCache.set(name, handlerInstance);
-    return handlerInstance.handler;
-  }));
-  return handlerInstances.reduce((acc, [name, handlerInstance]) => {
-    acc[name] = handlerInstance;
-    return acc;
-  }, {});
+  });
+  return handlerInstanceCache;
 }
 async function getHandler(name) {
   const handler = handlerInstanceCache.get(name);
@@ -200,28 +189,6 @@ async function getHandler(name) {
     throw new Error(`Handler '${name}' not found`);
   }
   return handler;
-}
-async function buildAndImportHandler(handlerPath) {
-  if (handlerBuildCache.has(handlerPath)) {
-    return handlerBuildCache.get(handlerPath);
-  }
-  const buildPromise = new Promise(async (resolve, reject) => {
-    const tmpOutputPath = path2.join(tmpdir(), `handler_${Date.now()}.mjs`);
-    handlerPath = path2.resolve(handlerPath);
-    const buildResult = spawnSync("bun", ["build", handlerPath, "--target", "node", "--format", "esm", "--outfile", tmpOutputPath], {
-      encoding: "utf-8"
-    });
-    if (buildResult.error || buildResult.status !== 0) {
-      reject(new Error(`Unable to compile '${handlerPath}': ${buildResult.stderr || buildResult.error?.message}`));
-      return;
-    }
-    const module = await import(`file://${tmpOutputPath}`);
-    await fs.unlink(tmpOutputPath).catch(() => {
-    });
-    resolve(module.default || module);
-  });
-  handlerBuildCache.set(handlerPath, buildPromise);
-  return buildPromise;
 }
 
 // src/extension.ts
@@ -234,7 +201,7 @@ function assertType(name, option, expectedType) {
 function resolveConfig(options) {
   assertType("configPath", options.configPath, "string");
   return {
-    configPath: options.configPath ?? "edgio.proxy.config.js",
+    configPath: options.configPath ?? "hdb-proxy.json",
     edgioConfigPath: options.edgioConfigPath ?? "edgio.config.js"
   };
 }
@@ -244,11 +211,14 @@ function start(options) {
     async handleDirectory(_, componentPath) {
       const proxyConfig = await ConfigLoader.loadConfig(config.configPath);
       await loadHandlersFromConfig(proxyConfig);
+      console.log("handlers loaded");
       if (!fs2.existsSync(componentPath) || !fs2.statSync(componentPath).isDirectory()) {
         throw new Error(`Invalid component path: ${componentPath}`);
       }
+      console.log("options", options.server);
       options.server.http(async (request, nextHandler) => {
         const { _nodeRequest: req, _nodeResponse: res } = request;
+        console.log("request", request);
         const name = "myProxyHandler";
         console.log("name", name);
         const handler = await getHandler(name);

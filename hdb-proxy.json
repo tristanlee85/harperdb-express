@@ -1,0 +1,11 @@
+{
+  "myProxyHandler": {
+    "type": "proxy",
+    "path": "test/myProxyHandler.mjs",
+    "origin": "api"
+  },
+  "myComputeHandler": {
+    "type": "compute",
+    "path": "test/myComputeHandler.mjs"
+  }
+}

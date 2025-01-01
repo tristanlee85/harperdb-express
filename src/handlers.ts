@@ -1,16 +1,12 @@
 import { IncomingMessage, ClientRequest } from 'node:http';
-import { spawnSync } from 'child_process';
-import path from 'node:path';
 import https from 'node:https';
 import http from 'node:http';
-import { tmpdir } from 'os';
-import fs from 'fs/promises';
 import type { Config } from './config.js';
 import { compress, decompress } from './utils/compression.js';
 import { ConfigLoader } from './config.js';
 
 // Handler import cache by path
-const handlerBuildCache: Map<string, Promise<any>> = new Map();
+const importedHandlers: Map<string, Promise<any>> = new Map();
 
 // Handler instance cache by name
 const handlerInstanceCache: Map<string, BaseHandlerImpl> = new Map();
@@ -33,20 +29,11 @@ type ProxyHandler = {
 
 class BaseHandlerImpl implements BaseHandler {
 	protected _handlerName: string;
-	protected _handler: Promise<any>;
+	protected _handler: any;
 
-	constructor(handlerName: string, handlerPath: string) {
-		this._handlerName = handlerName;
-		this._handler = buildAndImportHandler(handlerPath)
-			.then((handler) => {
-				logger.debug(`Handler '${handlerName}' built successfully.`);
-				return handler;
-			})
-			.catch((err) => {
-				logger.error(`Unable to compile '${handlerPath}': ${err}`);
-				handlerBuildCache.delete(handlerPath);
-				return;
-			});
+	constructor(name: string, handler: any) {
+		this._handlerName = name;
+		this._handler = handler;
 	}
 
 	async handleRequest(request: ClientRequest, response: IncomingMessage) {
@@ -66,8 +53,8 @@ class ProxyHandlerImpl extends BaseHandlerImpl implements ProxyHandler {
 	static HINT = 'proxy';
 	private _originName: string;
 
-	constructor(handlerName: string, handlerPath: string, originName: string) {
-		super(handlerName, handlerPath);
+	constructor(handlerName: string, handler: any, originName: string) {
+		super(handlerName, handler);
 		this._originName = originName;
 	}
 
@@ -177,48 +164,35 @@ class ProxyHandlerImpl extends BaseHandlerImpl implements ProxyHandler {
 class ComputeHandlerImpl extends BaseHandlerImpl {
 	static HINT = 'compute';
 
-	constructor(handlerName: string, handlerPath: string) {
-		super(handlerName, handlerPath);
+	constructor(name: string, handler: any) {
+		super(name, handler);
 	}
 
 	async handleRequest(request: any, response: any) {
-		this.handler.then((handler) => {
-			// User is responsible for writing the response
-			handler(request, response);
-		});
+		// User is responsible for writing the response
+		this.handler(request, response);
 	}
 }
 
 export async function loadHandlersFromConfig(config: Config): Promise<Record<string, BaseHandlerImpl>> {
 	const handlers = config.handlers;
 
-	const handlerInstances = Object.entries(handlers)
-		.map(([name, handler]): [string, BaseHandlerImpl] => {
-			const { type, path, origin } = handler;
+	Object.entries(handlers).forEach(async ([name, options]) => {
+		const { type, path, origin } = options;
 
-			switch (type) {
-				case 'proxy':
-					return [name, new ProxyHandlerImpl(name, path, origin ?? '')];
-				case 'compute':
-					return [name, new ComputeHandlerImpl(name, path)];
-			}
-		})
-		.filter(Boolean);
+		const handler = await import(path);
 
-	await Promise.all(
-		handlerInstances.map(([name, handlerInstance]) => {
-			handlerInstanceCache.set(name, handlerInstance);
-			return handlerInstance.handler;
-		})
-	);
+		switch (type) {
+			case 'proxy':
+				handlerInstanceCache[name] = new ProxyHandlerImpl(name, handler, origin ?? '');
+				break;
+			case 'compute':
+				handlerInstanceCache[name] = new ComputeHandlerImpl(name, handler);
+				break;
+		}
+	});
 
-	return handlerInstances.reduce(
-		(acc, [name, handlerInstance]): Record<string, BaseHandlerImpl> => {
-			acc[name] = handlerInstance;
-			return acc;
-		},
-		{} as Record<string, BaseHandlerImpl>
-	);
+	return handlerInstanceCache;
 }
 
 export async function getHandler(name: string): Promise<BaseHandlerImpl> {
@@ -229,40 +203,4 @@ export async function getHandler(name: string): Promise<BaseHandlerImpl> {
 	}
 
 	return handler;
-}
-
-async function buildAndImportHandler(handlerPath: string): Promise<any> {
-	// Check if the handler is already built and cached
-	if (handlerBuildCache.has(handlerPath)) {
-		return handlerBuildCache.get(handlerPath);
-	}
-
-	// Otherwise, start building and add it to the cache
-	const buildPromise = new Promise(async (resolve, reject) => {
-		const tmpOutputPath = path.join(tmpdir(), `handler_${Date.now()}.mjs`);
-		handlerPath = path.resolve(handlerPath);
-
-		const buildResult = spawnSync(
-			'bun',
-			['build', handlerPath, '--target', 'node', '--format', 'esm', '--outfile', tmpOutputPath],
-			{
-				encoding: 'utf-8',
-			}
-		);
-
-		if (buildResult.error || buildResult.status !== 0) {
-			reject(new Error(`Unable to compile '${handlerPath}': ${buildResult.stderr || buildResult.error?.message}`));
-			return;
-		}
-
-		const module = await import(`file://${tmpOutputPath}`);
-
-		await fs.unlink(tmpOutputPath).catch(() => {});
-
-		resolve(module.default || module);
-	});
-
-	handlerBuildCache.set(handlerPath, buildPromise);
-
-	return buildPromise;
 }
