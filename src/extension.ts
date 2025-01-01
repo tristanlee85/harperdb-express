@@ -1,28 +1,15 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import assert from 'node:assert';
-import http from 'node:http';
-import https from 'node:https';
-import { decompress, compress } from './utils/compression';
-
-declare const logger: any;
-
-/**
- * Patch `logger` methods to include prefix
- */
-const [logInfo, logDebug, logError, logWarn] = ['info', 'debug', 'error', 'warn'].map((method) => {
-	const fn = logger[method];
-	return (message: string) => {
-		fn(`[harperdb-proxy-transform] ${message}`);
-	};
-});
+import { ConfigLoader } from './config';
+import { getHandler, loadHandlersFromConfig } from './handlers';
 
 /**
  * @typedef {Object} ExtensionOptions - The configuration options for the extension.
- * @property {string=} transformerPath - A path to a transformer file to be used by the Express.js server.
+ * @property {string=} configPath - Path to a configuration file to be used by the extension.
  */
 export type ExtensionOptions = {
-	transformerPath?: string;
+	configPath?: string;
+	edgioConfigPath?: string;
 };
 
 /**
@@ -44,10 +31,11 @@ function assertType(name: string, option: any, expectedType: string) {
  * @returns {Required<ExtensionOptions>}
  */
 function resolveConfig(options: ExtensionOptions) {
-	assertType('transformerPath', options.transformerPath, 'string');
+	assertType('configPath', options.configPath, 'string');
 
 	return {
-		transformerPath: options.transformerPath ?? '',
+		configPath: options.configPath ?? 'hdb-proxy.json',
+		edgioConfigPath: options.edgioConfigPath ?? 'edgio.config.js',
 	};
 }
 
@@ -65,119 +53,31 @@ function resolveConfig(options: ExtensionOptions) {
 export function start(options: any) {
 	const config = resolveConfig(options);
 
-	logInfo(`Starting extension...`);
-
 	return {
 		async handleDirectory(_: any, componentPath: string) {
-			let transformReqFn: ((req: any) => Promise<void>) | undefined;
-			let transformResFn: ((rawBody: Buffer, res: any, req: any) => Promise<Buffer | string | undefined>) | undefined;
+			const proxyConfig = await ConfigLoader.loadConfig(config.configPath);
+
+			// Prepare the proxy/compute handlers
+			await loadHandlersFromConfig(proxyConfig);
+			console.log('handlers loaded');
 
 			if (!fs.existsSync(componentPath) || !fs.statSync(componentPath).isDirectory()) {
 				throw new Error(`Invalid component path: ${componentPath}`);
 			}
 
-			// User-defined transformer
-			if (!!config.transformerPath) {
-				// Check to ensure the transformer path is a valid file
-				const importPath = path.resolve(componentPath, config.transformerPath);
-				if (!fs.existsSync(importPath) || !fs.statSync(importPath).isFile()) {
-					throw new Error(`Invalid transformer path: ${importPath}`);
-				}
-
-				// Transformer must be be a module with named exports
-				const { transformRequest, transformResponse } = await import(importPath);
-
-				transformReqFn = transformRequest;
-				transformResFn = transformResponse;
-			}
-
 			// Hook into `options.server.http`
+			console.log('options', options.server);
 			options.server.http(async (request: any, nextHandler: any) => {
 				const { _nodeRequest: req, _nodeResponse: res } = request;
 
-				const { transformRequest, transformResponse } = request.edgio?.proxyHandler ?? {};
+				console.log('request', request);
 
-				// Per-request transformers should override those defined in the extension
-				if (transformRequest) {
-					transformReqFn = transformRequest;
-				}
-				if (transformResponse) {
-					transformResFn = transformResponse;
-				}
+				// TODO: the rule provided will contain the handler name
+				const name = 'myProxyHandler';
+				console.log('name', name);
 
-				try {
-					logDebug(`Incoming request: ${req.url.split('?')[0]}`);
-
-					if (transformReqFn) {
-						await transformReqFn(req);
-					}
-
-					// TODO: this property will should be defined by the edge-control-parser extension
-					const scheme = 'https';
-					const host = 'www.google.com';
-					req.headers.host = host;
-
-					const protocol = scheme === 'https' ? https : http;
-
-					const upstreamOptions = {
-						method: req.method,
-						hostname: host,
-						port: scheme === 'https' ? 443 : 80,
-						path: req.url,
-						headers: req.headers,
-					};
-
-					const proxyReq = protocol.request(upstreamOptions, (proxyRes) => {
-						logDebug(`Received response from upstream: ${proxyRes.statusCode}`);
-
-						const encoding = proxyRes.headers['content-encoding'];
-						const chunks: any[] = [];
-						proxyRes.on('data', (chunk) => chunks.push(chunk));
-
-						proxyRes.on('end', async () => {
-							let body = Buffer.concat(chunks);
-
-							if (transformResFn) {
-								const decompressedBody = await decompress(body, encoding ?? '');
-								let transformedBody = await transformResFn(decompressedBody, proxyRes, proxyReq);
-
-								if (transformedBody && transformedBody !== body) {
-									transformedBody = Buffer.isBuffer(transformedBody) ? transformedBody : Buffer.from(transformedBody);
-									const compressedBody = await compress(transformedBody, encoding ?? '');
-
-									const headers = { ...proxyRes.headers };
-									if (encoding) {
-										headers['content-encoding'] = encoding;
-										headers['content-length'] = Buffer.byteLength(compressedBody).toString();
-									} else {
-										delete headers['content-encoding'];
-										headers['content-length'] = Buffer.byteLength(compressedBody).toString();
-									}
-
-									res.writeHead(proxyRes.statusCode, headers);
-									res.end(compressedBody);
-									return;
-								}
-							}
-
-							res.writeHead(proxyRes.statusCode, proxyRes.headers);
-							res.end(body);
-						});
-					});
-
-					req.pipe(proxyReq);
-
-					proxyReq.on('error', (err: any) => {
-						logError(`Proxy request error: ${err}`);
-						res.statusCode = 502;
-						res.end('Bad Gateway');
-					});
-				} catch (error) {
-					// General error handling
-					logError(`Error handling proxy request: ${error}`);
-					res.statusCode = 500;
-					res.end('Internal Server Error');
-				}
+				const handler = await getHandler(name);
+				await handler.handleRequest(req, res);
 			});
 
 			return true;

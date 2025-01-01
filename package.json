@@ -8,8 +8,9 @@
 	},
 	"devDependencies": {
 		"@harperdb/code-guidelines": "^0.0.2",
-		"prettier": "^3.4.2",
-		"@types/bun": "latest"
+		"@types/bun": "latest",
+		"@types/yargs": "^17.0.33",
+		"prettier": "^3.4.2"
 	},
 	"peerDependencies": {
 		"typescript": "^5.0.0"
@@ -19,9 +20,14 @@
 		"config.yaml",
 		"dist/"
 	],
+	"bin": {
+		"hdb-proxy": "./dist/cli.js"
+	},
 	"prettier": "@harperdb/code-guidelines/prettier",
 	"scripts": {
-		"build": "bun build src/extension.ts --outdir dist --target node",
+		"build": "bun run build:extension && bun run build:cli",
+		"build:extension": "bun build src/extension.ts --outdir dist --target node",
+		"build:cli": "bun build src/cli.ts --outdir dist --target node",
 		"watch": "bun run build && chokidar 'src/**/*.ts' -c 'bun run build'",
 		"format": "prettier .",
 		"format:check": "npm run format -- --check",
@@ -29,6 +35,8 @@
 	},
 	"type": "module",
 	"dependencies": {
-		"chokidar-cli": "^3.0.0"
+		"bun": "^1.1.41",
+		"chokidar-cli": "^3.0.0",
+		"yargs": "^17.7.2"
 	}
 }
