@@ -15742,10 +15742,18 @@ var createHandlerConfigSchema = async () => {
   return z.object({
     type: z.union([z.literal("proxy"), z.literal("compute")]).describe('The handler type must be either "proxy" or "compute".'),
     path: z.string().nonempty('The "path" property cannot be empty.').describe("The path to be handled by this configuration."),
-    origin: z.string().nonempty('The "origin" property cannot be empty.').refine((origin) => validOrigins.includes(origin), (origin) => ({
+    origin: z.string().optional().refine((origin) => !origin || validOrigins.includes(origin), (origin) => ({
       message: `Invalid origin '${origin}'. Must be one of: ${validOrigins.join(", ")}`
     })).describe("The origin server for the handler configuration."),
     always: z.boolean().default(false).describe("Whether the handler should always be applied.")
+  }).superRefine((data, ctx) => {
+    if (data.type === "proxy" && !data.origin) {
+      ctx.addIssue({
+        path: ["origin"],
+        message: 'The "origin" property is required when "type" is "proxy".',
+        code: z.ZodIssueCode.custom
+      });
+    }
   });
 };
 var createHDBConfigSchema = async () => {

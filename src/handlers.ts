@@ -179,8 +179,9 @@ class ComputeHandlerImpl extends BaseHandlerImpl {
 	}
 
 	async handleRequest(request: any, response: any) {
+		const computeHandler = this.handler.default?.default || this.handler.default;
 		// User is responsible for writing the response
-		this.handler(request, response);
+		computeHandler(request, response);
 	}
 }
 
@@ -204,7 +205,11 @@ export async function loadHandlersFromConfig(
 
 		switch (type) {
 			case 'proxy':
-				handlerInstanceCache.set(name, new ProxyHandlerImpl(name, handler, origin, always));
+				if (origin) {
+					handlerInstanceCache.set(name, new ProxyHandlerImpl(name, handler, origin, always));
+				} else {
+					throw new Error(`Origin is required for handler type 'proxy'`);
+				}
 				break;
 			case 'compute':
 				handlerInstanceCache.set(name, new ComputeHandlerImpl(name, handler, always));

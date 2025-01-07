@@ -11123,10 +11123,18 @@ var createHandlerConfigSchema = async () => {
   return z.object({
     type: z.union([z.literal("proxy"), z.literal("compute")]).describe('The handler type must be either "proxy" or "compute".'),
     path: z.string().nonempty('The "path" property cannot be empty.').describe("The path to be handled by this configuration."),
-    origin: z.string().nonempty('The "origin" property cannot be empty.').refine((origin) => validOrigins.includes(origin), (origin) => ({
+    origin: z.string().optional().refine((origin) => !origin || validOrigins.includes(origin), (origin) => ({
       message: `Invalid origin '${origin}'. Must be one of: ${validOrigins.join(", ")}`
     })).describe("The origin server for the handler configuration."),
     always: z.boolean().default(false).describe("Whether the handler should always be applied.")
+  }).superRefine((data, ctx) => {
+    if (data.type === "proxy" && !data.origin) {
+      ctx.addIssue({
+        path: ["origin"],
+        message: 'The "origin" property is required when "type" is "proxy".',
+        code: z.ZodIssueCode.custom
+      });
+    }
   });
 };
 var createHDBConfigSchema = async () => {
@@ -11315,7 +11323,8 @@ class ComputeHandlerImpl extends BaseHandlerImpl {
     super(name, handler, always);
   }
   async handleRequest(request, response) {
-    this.handler(request, response);
+    const computeHandler = this.handler.default?.default || this.handler.default;
+    computeHandler(request, response);
   }
 }
 async function loadHandlersFromConfig(config, componentPath) {
@@ -11330,7 +11339,11 @@ async function loadHandlersFromConfig(config, componentPath) {
     const handler = await import(componentRequire.resolve(importPath));
     switch (type) {
       case "proxy":
-        handlerInstanceCache.set(name, new ProxyHandlerImpl(name, handler, origin, always));
+        if (origin) {
+          handlerInstanceCache.set(name, new ProxyHandlerImpl(name, handler, origin, always));
+        } else {
+          throw new Error(`Origin is required for handler type 'proxy'`);
+        }
         break;
       case "compute":
         handlerInstanceCache.set(name, new ComputeHandlerImpl(name, handler, always));
@@ -11385,6 +11398,7 @@ function start(options) {
           const handlerName = features.headers.set_request_headers.transform;
           const handlers = getHandler(handlerName, true);
           for (const handler of handlers) {
+            console.log(handler.name, "headersSent", res.headersSent);
             await handler.handleRequest(req, res);
           }
         } else {
