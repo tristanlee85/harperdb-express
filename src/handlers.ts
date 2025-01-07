@@ -1,12 +1,12 @@
 import { IncomingMessage, ClientRequest } from 'node:http';
 import https from 'node:https';
 import http from 'node:http';
-import type { Config } from './config.js';
+import { join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import type { EdgioProxyTransformConfig } from './config.js';
 import { compress, decompress } from './utils/compression.js';
 import { ConfigLoader } from './config.js';
-
-// Handler import cache by path
-const importedHandlers: Map<string, Promise<any>> = new Map();
 
 // Handler instance cache by name
 const handlerInstanceCache: Map<string, BaseHandlerImpl> = new Map();
@@ -23,17 +23,19 @@ type BaseHandler = {
 };
 
 type ProxyHandler = {
-	transformRequest?: (request: any) => Promise<IncomingMessage>;
-	transformResponse?: (rawBody: Buffer, response: any, request: any) => Promise<Buffer | string | undefined>;
+	transformRequest?: (request: any) => void;
+	transformResponse?: (response: any, request: any, rawBody: any) => void;
 };
 
 class BaseHandlerImpl implements BaseHandler {
 	protected _handlerName: string;
 	protected _handler: any;
+	protected _always: boolean;
 
-	constructor(name: string, handler: any) {
+	constructor(name: string, handler: any, always: boolean = false) {
 		this._handlerName = name;
 		this._handler = handler;
+		this._always = always;
 	}
 
 	async handleRequest(request: ClientRequest, response: IncomingMessage) {
@@ -47,19 +49,23 @@ class BaseHandlerImpl implements BaseHandler {
 	get name() {
 		return this._handlerName;
 	}
+
+	get always() {
+		return this._always;
+	}
 }
 
 class ProxyHandlerImpl extends BaseHandlerImpl implements ProxyHandler {
 	static HINT = 'proxy';
 	private _originName: string;
 
-	constructor(handlerName: string, handler: any, originName: string) {
-		super(handlerName, handler);
+	constructor(handlerName: string, handler: any, originName: string, always: boolean = false) {
+		super(handlerName, handler, always);
 		this._originName = originName;
 	}
 
 	private async getOrigin(): Promise<OriginConfig> {
-		let edgioConfig = await ConfigLoader.loadEdgioConfig();
+		const edgioConfig = await ConfigLoader.loadEdgioConfig();
 
 		const origin = edgioConfig.origins.find((origin: any) => origin.name === this._originName);
 
@@ -77,26 +83,27 @@ class ProxyHandlerImpl extends BaseHandlerImpl implements ProxyHandler {
 		return { scheme, hostname, port, overrideHostHeader };
 	}
 
-	get transformRequest() {
-		return async (request: any) => {
-			const { transformRequest } = await this.handler;
+	async transformRequest(request: any) {
+		const transformHandler = this.handler?.transformRequest || this.handler?.default?.transformRequest;
 
-			if (transformRequest) {
-				return transformRequest(request);
-			}
+		if (transformHandler) {
+			transformHandler(request);
+		}
 
-			return request;
-		};
+		return request;
 	}
 
-	get transformResponse() {
-		return async (rawBody: any, response: any, request: any) => {
-			const handlerModule = await this.handler;
-			return handlerModule.transformResponse(rawBody, response, request);
-		};
+	async transformResponse(response: any, request: any, rawBody: any) {
+		const transformHandler =
+			this.handler?.transformResponse || this.handler?.default?.transformResponse || this.handler?.default?.default;
+
+		if (transformHandler) {
+			transformHandler(response, request, rawBody);
+		}
 	}
 
 	async handleRequest(request: any, response: any) {
+		logger.debug(`Handling request for '${this._handlerName}' to '${this._originName}'`);
 		const { scheme, hostname, port, overrideHostHeader } = await this.getOrigin();
 
 		// Transform the request prior to proxying to ensure the host header and
@@ -105,58 +112,68 @@ class ProxyHandlerImpl extends BaseHandlerImpl implements ProxyHandler {
 
 		const protocol = scheme === 'https' ? https : http;
 
-		request.headers.host = overrideHostHeader || hostname;
+		request.headers.set('host', overrideHostHeader || hostname);
+
+		const headers = Object.fromEntries(request.headers.entries());
 
 		const upstreamOptions = {
 			method: request.method,
 			hostname,
 			port,
 			path: request.url,
-			headers: request.headers,
+			headers,
 		};
 
-		const proxyReq = protocol.request(upstreamOptions, (proxyRes) => {
-			logger.debug(`Received response from upstream: ${proxyRes.statusCode}`);
+		await new Promise<void>((resolve, reject) => {
+			const proxyReq = protocol.request(upstreamOptions, (proxyRes) => {
+				logger.info(`Received response from upstream: ${proxyRes.statusCode}`);
 
-			const encoding = proxyRes.headers['content-encoding'];
-			const chunks: any[] = [];
-			proxyRes.on('data', (chunk) => chunks.push(chunk));
+				const encoding = proxyRes.headers['content-encoding'];
+				const chunks: any[] = [];
+				proxyRes.on('data', (chunk) => chunks.push(chunk));
 
-			proxyRes.on('end', async () => {
-				let body = Buffer.concat(chunks);
+				proxyRes.on('end', async () => {
+					try {
+						let body = Buffer.concat(chunks);
 
-				const decompressedBody = await decompress(body, encoding ?? '');
-				let transformedBody = await this.transformResponse(decompressedBody, proxyRes, proxyReq);
+						const decompressedBody = await decompress(body, encoding ?? '');
+						await this.transformResponse(proxyRes, proxyReq, decompressedBody);
+						let transformedBody = (proxyRes as any).body;
 
-				if (transformedBody && transformedBody !== body) {
-					transformedBody = Buffer.isBuffer(transformedBody) ? transformedBody : Buffer.from(transformedBody);
-					const compressedBody = await compress(transformedBody, encoding ?? '');
+						if (transformedBody && transformedBody !== body) {
+							transformedBody = Buffer.isBuffer(transformedBody) ? transformedBody : Buffer.from(transformedBody);
+							const compressedBody = await compress(transformedBody, encoding ?? '');
 
-					const headers = { ...proxyRes.headers };
-					if (encoding) {
-						headers['content-encoding'] = encoding;
-						headers['content-length'] = Buffer.byteLength(compressedBody).toString();
-					} else {
-						delete headers['content-encoding'];
-						headers['content-length'] = Buffer.byteLength(compressedBody).toString();
+							const headers = { ...proxyRes.headers };
+							if (encoding) {
+								headers['content-encoding'] = encoding;
+								headers['content-length'] = Buffer.byteLength(compressedBody).toString();
+							} else {
+								delete headers['content-encoding'];
+								headers['content-length'] = Buffer.byteLength(compressedBody).toString();
+							}
+
+							response.writeHead(proxyRes.statusCode, headers);
+							response.end(compressedBody);
+						} else {
+							response.writeHead(proxyRes.statusCode, proxyRes.headers);
+							response.end(body);
+						}
+						resolve();
+					} catch (error) {
+						reject(error);
 					}
-
-					response.writeHead(proxyRes.statusCode, headers);
-					response.end(compressedBody);
-					return;
-				}
-
-				response.writeHead(proxyRes.statusCode, proxyRes.headers);
-				response.end(body);
+				});
 			});
-		});
 
-		request.pipe(proxyReq);
+			request.pipe(proxyReq);
 
-		proxyReq.on('error', (err: any) => {
-			logger.error(`Proxy request error: ${err}`);
-			response.statusCode = 502;
-			response.end('Bad Gateway');
+			proxyReq.on('error', (err: any) => {
+				logger.error(`Proxy request error: ${err}`);
+				response.statusCode = 502;
+				response.end('Bad Gateway');
+				reject(err);
+			});
 		});
 	}
 }
@@ -164,43 +181,99 @@ class ProxyHandlerImpl extends BaseHandlerImpl implements ProxyHandler {
 class ComputeHandlerImpl extends BaseHandlerImpl {
 	static HINT = 'compute';
 
-	constructor(name: string, handler: any) {
-		super(name, handler);
+	constructor(name: string, handler: any, always: boolean = false) {
+		super(name, handler, always);
 	}
 
 	async handleRequest(request: any, response: any) {
+		const computeHandler = this.handler.default?.default || this.handler.default;
 		// User is responsible for writing the response
-		this.handler(request, response);
+		await computeHandler(request, response);
 	}
 }
 
-export async function loadHandlersFromConfig(config: Config): Promise<Record<string, BaseHandlerImpl>> {
+export async function loadHandlersFromConfig(
+	config: EdgioProxyTransformConfig,
+	componentPath: string
+): Promise<Map<string, BaseHandlerImpl>> {
 	const handlers = config.handlers;
+	const componentRequire = createRequire(componentPath);
+	const edgioConfig = await ConfigLoader.loadEdgioConfig();
 
-	Object.entries(handlers).forEach(async ([name, options]) => {
-		const { type, path, origin } = options;
+	const handlerPromises = Object.entries(handlers).map(async ([name, options]) => {
+		const { type, origin, always } = options;
 
-		const handler = await import(path);
+		const importPath = getImportPath(config.outputDir, name);
+
+		if (!importPath) {
+			throw new Error(`Unable to find handler '${name}' at ${config.outputDir}`);
+		}
+
+		const handler = await import(componentRequire.resolve(importPath));
 
 		switch (type) {
 			case 'proxy':
-				handlerInstanceCache[name] = new ProxyHandlerImpl(name, handler, origin ?? '');
+				if (origin) {
+					handlerInstanceCache.set(name, new ProxyHandlerImpl(name, handler, origin, always));
+				} else {
+					throw new Error(`Origin is required for handler type 'proxy'`);
+				}
 				break;
 			case 'compute':
-				handlerInstanceCache[name] = new ComputeHandlerImpl(name, handler);
+				handlerInstanceCache.set(name, new ComputeHandlerImpl(name, handler, always));
 				break;
 		}
 	});
 
+	// Add default origin handler
+	const defaultOrigin = config.defaultOrigin || (edgioConfig.origins as any[])[0].name;
+	if (defaultOrigin) {
+		handlerInstanceCache.set('__default__', new ProxyHandlerImpl('__default__', null, defaultOrigin));
+	}
+
+	await Promise.all(handlerPromises);
+
 	return handlerInstanceCache;
 }
 
-export async function getHandler(name: string): Promise<BaseHandlerImpl> {
-	const handler = handlerInstanceCache.get(name);
+/**
+ * Gets the handler instance for the given name, optionally including handlers that are always applied.
+ * If the handler is not found and `includeAlways` is true, any handlers that are always applied will be returned.
+ * @param name - The name of the handler to get
+ * @param includeAlways - Whether to include handlers that are always applied
+ * @returns An array of handlers
+ */
+export function getHandler(name: string, includeAlways: boolean = true): BaseHandlerImpl[] {
+	const handlers: BaseHandlerImpl[] = [];
 
-	if (!handler) {
-		throw new Error(`Handler '${name}' not found`);
-	}
+	handlerInstanceCache.forEach((handler, handlerName) => {
+		if (handlerName === name || (includeAlways && handler.always)) {
+			handlers.push(handler);
+		}
+	});
 
-	return handler;
+	return handlers;
+}
+
+/**
+ * Gets the default origin handler.
+ * @param includeAlways - Whether to include handlers that are always applied
+ * @returns An array of handlers
+ */
+export function getDefaultOriginHandler(includeAlways: boolean = true): BaseHandlerImpl[] {
+	return getHandler('__default__', includeAlways);
+}
+
+/**
+ * Gets all handlers that are always applied.
+ * @returns An array of handlers
+ */
+export function getAlwaysHandlers(): BaseHandlerImpl[] {
+	return Array.from(handlerInstanceCache.values()).filter((handler) => handler.always);
+}
+
+function getImportPath(dir: string, name: string) {
+	const resolvedPath = resolve(dir, name);
+
+	return ['.js', '.cjs', '.mjs'].map((ext) => `${resolvedPath}${ext}`).find(existsSync);
 }

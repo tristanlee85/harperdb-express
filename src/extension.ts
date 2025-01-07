@@ -1,14 +1,15 @@
-import fs from 'node:fs';
 import assert from 'node:assert';
 import { ConfigLoader } from './config';
-import { getHandler, loadHandlersFromConfig } from './handlers';
+import { getHandler, getAlwaysHandlers, getDefaultOriginHandler, loadHandlersFromConfig } from './handlers';
+
+export const EXTENSION_NAME = 'harperdb-proxy-transform';
+const HEADER_HINT_NAME = '+x-cloud-functions-hint';
 
 /**
  * @typedef {Object} ExtensionOptions - The configuration options for the extension.
  * @property {string=} configPath - Path to a configuration file to be used by the extension.
  */
 export type ExtensionOptions = {
-	configPath?: string;
 	edgioConfigPath?: string;
 };
 
@@ -31,53 +32,52 @@ function assertType(name: string, option: any, expectedType: string) {
  * @returns {Required<ExtensionOptions>}
  */
 function resolveConfig(options: ExtensionOptions) {
-	assertType('configPath', options.configPath, 'string');
-
 	return {
-		configPath: options.configPath ?? 'hdb-proxy.json',
 		edgioConfigPath: options.edgioConfigPath ?? 'edgio.config.js',
 	};
 }
 
-/**
- * This method is executed on each worker thread, and is responsible for
- * returning a Resource Extension that will subsequently be executed on each
- * worker thread.
- *
- * The Resource Extension is responsible for creating the Next.js server, and
- * hooking into the global HarperDB server.
- *
- * @param {ExtensionOptions} options
- * @returns
- */
+export function startOnMainThread(options: any) {
+	return {
+		async setupDirectory(_: any, componentPath: string) {
+			// TODO: optionally bundle the handlers if they don't exist
+			return true;
+		},
+	};
+}
+
 export function start(options: any) {
 	const config = resolveConfig(options);
 
 	return {
 		async handleDirectory(_: any, componentPath: string) {
-			const proxyConfig = await ConfigLoader.loadConfig(config.configPath);
+			const hdbConfig = await ConfigLoader.loadHDBConfig();
 
 			// Prepare the proxy/compute handlers
-			await loadHandlersFromConfig(proxyConfig);
-			console.log('handlers loaded');
-
-			if (!fs.existsSync(componentPath) || !fs.statSync(componentPath).isDirectory()) {
-				throw new Error(`Invalid component path: ${componentPath}`);
-			}
+			await loadHandlersFromConfig(hdbConfig, componentPath);
 
 			// Hook into `options.server.http`
-			console.log('options', options.server);
 			options.server.http(async (request: any, nextHandler: any) => {
 				const { _nodeRequest: req, _nodeResponse: res } = request;
+				const { features, origins } = request.edgio;
+				const defaultOriginHandler = getDefaultOriginHandler();
 
-				console.log('request', request);
+				if (features?.headers?.set_request_headers?.[HEADER_HINT_NAME]) {
+					const handlerName = features.headers.set_request_headers.transform;
+					const handlers = getHandler(handlerName, true);
 
-				// TODO: the rule provided will contain the handler name
-				const name = 'myProxyHandler';
-				console.log('name', name);
+					for (const handler of handlers) {
+						await handler.handleRequest(req, res);
+					}
+				} else {
+					for (const handler of defaultOriginHandler) {
+						await handler.handleRequest(req, res);
+					}
+				}
 
-				const handler = await getHandler(name);
-				await handler.handleRequest(req, res);
+				if (!res.headersSent) {
+					return nextHandler(request);
+				}
 			});
 
 			return true;
