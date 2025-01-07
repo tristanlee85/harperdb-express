@@ -9,7 +9,7 @@ const HEADER_HINT_NAME = '+x-cloud-functions-hint';
  * @typedef {Object} ExtensionOptions - The configuration options for the extension.
  * @property {string=} configPath - Path to a configuration file to be used by the extension.
  */
-export type ExtensionOptions = {
+type ExtensionOptions = {
 	edgioConfigPath?: string;
 };
 
