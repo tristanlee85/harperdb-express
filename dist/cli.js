@@ -15762,6 +15762,7 @@ var createHDBConfigSchema = async () => {
     [EXTENSION_NAME]: z.object({
       package: z.string().nonempty('The "package" property is required and cannot be empty.').describe("The name of the package being used."),
       outputDir: z.string().nonempty('The "outputDir" property is required and cannot be empty.').describe("The output directory for the build files."),
+      defaultOrigin: z.string().nonempty('The "defaultOrigin" property is required and cannot be empty.').describe("The default origin for the proxy handlers."),
       handlers: z.record(handlerConfigSchema).describe("The handlers configuration must be an object where keys represent handler names.")
     })
   });

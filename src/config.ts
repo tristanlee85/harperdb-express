@@ -15,6 +15,7 @@ export type HandlerConfig = {
 export type EdgioProxyTransformConfig = {
 	package: string;
 	outputDir: string;
+	defaultOrigin: string;
 	handlers: {
 		[key: string]: HandlerConfig;
 	};
@@ -78,6 +79,10 @@ const createHDBConfigSchema = async () => {
 				.string()
 				.nonempty('The "outputDir" property is required and cannot be empty.')
 				.describe('The output directory for the build files.'),
+			defaultOrigin: z
+				.string()
+				.nonempty('The "defaultOrigin" property is required and cannot be empty.')
+				.describe('The default origin for the proxy handlers.'),
 			handlers: z
 				.record(handlerConfigSchema)
 				.describe('The handlers configuration must be an object where keys represent handler names.'),

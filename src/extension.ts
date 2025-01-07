@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { ConfigLoader } from './config';
-import { getHandler, getAlwaysHandlers, loadHandlersFromConfig } from './handlers';
+import { getHandler, getAlwaysHandlers, getDefaultOriginHandler, loadHandlersFromConfig } from './handlers';
 
 export const EXTENSION_NAME = 'harperdb-proxy-transform';
 const HEADER_HINT_NAME = '+x-cloud-functions-hint';
@@ -60,6 +60,7 @@ export function start(options: any) {
 			options.server.http(async (request: any, nextHandler: any) => {
 				const { _nodeRequest: req, _nodeResponse: res } = request;
 				const { features, origins } = request.edgio;
+				const defaultOriginHandler = getDefaultOriginHandler();
 
 				if (features?.headers?.set_request_headers?.[HEADER_HINT_NAME]) {
 					const handlerName = features.headers.set_request_headers.transform;
@@ -69,13 +70,14 @@ export function start(options: any) {
 						await handler.handleRequest(req, res);
 					}
 				} else {
-					const alwaysHandlers = getAlwaysHandlers();
-					for (const handler of alwaysHandlers) {
+					for (const handler of defaultOriginHandler) {
 						await handler.handleRequest(req, res);
 					}
 				}
 
-				return nextHandler(request);
+				if (!res.headersSent) {
+					return nextHandler(request);
+				}
 			});
 
 			return true;
